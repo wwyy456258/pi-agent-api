@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+pi-http.config.json
+.env
+*.tgz
+.DS_Store

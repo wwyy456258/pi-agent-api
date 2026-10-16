@@ -1,0 +1,6 @@
+{
+  "server": { "host": "127.0.0.1", "port": 3000, "shutdown_grace_seconds": 30 },
+  "chat": { "storage_dir": "./data/chats", "ttl_seconds": 86400, "cleanup_interval_seconds": 300 },
+  "storage": { "database_path": "./data/pi-http.sqlite" },
+  "upload": { "max_file_bytes": 0, "max_request_bytes": 0, "max_files": 0 }
+}
