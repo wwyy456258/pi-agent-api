@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createAgentSessionFromServices, createAgentSessionServices, getPackageDir, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -149,5 +149,56 @@ try {
     if (originalKey === undefined) delete process.env.PI_HTTP_API_KEY;
     else process.env.PI_HTTP_API_KEY = originalKey;
   }
+  // Run the real Pi CLI headlessly through the packaged service adapter.
+  const serviceConfig = join(root, "service.json");
+  const serviceEnvironment = join(root, "environment.json");
+  const serviceStatus = join(root, "status.json");
+  await writeFile(serviceEnvironment, JSON.stringify({ PI_HTTP_API_KEY: "fake-service-key", PI_CODING_AGENT_DIR: agentDir,
+    PATH: process.env.PATH ?? "", PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1" }));
+  await writeFile(serviceConfig, JSON.stringify({ node: process.execPath, cwd: root,
+    pi: [process.execPath, join(getPackageDir(), "dist/bundle/cli.js")], httpConfig: join(root, "pi-http.config.json"),
+    environment: serviceEnvironment, status: serviceStatus, startupTimeout: 15, stopTimeout: 5 }));
+  const launch = () => {
+    const child = spawn(process.execPath, [join(packageRoot, "scripts/service.mjs"), "run", "--service-config", serviceConfig], {
+      cwd: root, env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let logs = "";
+    child.stdout.on("data", data => { logs += data; });
+    child.stderr.on("data", data => { logs += data; });
+    const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    return { child, exited, logs: () => logs };
+  };
+  const daemon = launch();
+  try {
+    const deadline = Date.now() + 18000;
+    while (true) {
+      const state = await readFile(serviceStatus, "utf8").then(JSON.parse).catch(() => null);
+      if (state?.state === "ready") break;
+      assert.equal(daemon.child.exitCode, null, daemon.logs());
+      assert.ok(Date.now() < deadline, daemon.logs());
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const url = `http://127.0.0.1:${pluginPort}`;
+    const headers = { authorization: "Bearer fake-service-key", "content-type": "application/json" };
+    assert.equal((await fetch(`${url}/v1/models`, { headers })).status, 200);
+    const result = await fetch(`${url}/v1/chat`, { method: "POST", headers, body: JSON.stringify({ message: "headless Pi [tool]" }) });
+    assert.equal(result.status, 200, await result.clone().text());
+    assert.equal((await result.json() as { reply: string }).reply, "tool-ok");
+    daemon.child.kill("SIGTERM");
+    assert.equal(await daemon.exited, 0, daemon.logs());
+    await assert.rejects(fetch(`${url}/v1/models`, { headers }));
+    await assert.rejects(readFile(serviceStatus));
+    assert.ok(!daemon.logs().includes("fake-service-key"));
+  } finally {
+    if (daemon.child.exitCode === null) { daemon.child.kill("SIGTERM"); await daemon.exited; }
+  }
+  const occupied = createServer();
+  occupied.listen(pluginPort, "127.0.0.1");
+  await once(occupied, "listening");
+  try {
+    const failed = launch();
+    assert.equal(await failed.exited, 1, failed.logs());
+    assert.match(failed.logs(), /failed to start/);
+  } finally { await new Promise<void>(resolve => occupied.close(() => resolve())); }
   process.stdout.write("Pi SDK integration passed\n");
 } finally { await server.close(); provider.closeAllConnections(); await new Promise<void>(resolve => provider.close(() => resolve())); }

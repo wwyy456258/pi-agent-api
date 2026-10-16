@@ -20,7 +20,7 @@ test("packed extension installs and runs with host-provided Pi SDK and productio
   await exec("tar", ["-xzf", join(directory, artifact.filename), "-C", directory]);
   const extension = join(directory, "package");
   const manifest = JSON.parse(await readFile(join(extension, "package.json"), "utf8"));
-  assert.equal(manifest.bin, undefined);
+  assert.equal(manifest.bin["pi-http-service"], "scripts/service.mjs");
   assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], undefined);
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
   // Link exactly the declared runtime dependencies. Pi itself is intentionally absent.
@@ -30,6 +30,10 @@ test("packed extension installs and runs with host-provided Pi SDK and productio
     await symlink(await realpath(join(project, "node_modules", name)), destination, "dir");
   }
   assert.equal(existsSync(join(extension, "node_modules/@earendil-works/pi-coding-agent")), false);
+  const serviceBin = join(directory, "pi-http-service");
+  await symlink(join(extension, "scripts/service.mjs"), serviceBin);
+  const help = await exec(process.execPath, [serviceBin, "--help"]);
+  assert.match(help.stdout, /systemd/);
   const runtime = join(directory, "runtime");
   await mkdir(runtime);
   const result = await exec(process.execPath, ["--import", "tsx", join(project, "test/fixtures/pi-check.ts"), runtime], {

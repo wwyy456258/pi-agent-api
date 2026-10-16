@@ -12,6 +12,12 @@ export default function piHttp(pi: ExtensionAPI): void {
   let transition: Promise<void> = Promise.resolve();
   let latestContext: ExtensionContext | undefined;
 
+  // Private stderr JSONL handshake for the service launcher, isolated from ordinary Pi use.
+  const serviceStatus = (state: "ready" | "error", listeningAddress?: string) => {
+    const token = process.env.PI_HTTP_SERVICE_READY_TOKEN;
+    if (token) process.stderr.write(`${JSON.stringify({ type: "pi_http_service", token, state, address: listeningAddress })}\n`);
+  };
+
   const report = (ctx: ExtensionContext, message: string, error = false) => {
     if (ctx.hasUI) ctx.ui.notify(message, error ? "error" : "info");
     else process.stderr.write(`${message}\n`);
@@ -40,6 +46,7 @@ export default function piHttp(pi: ExtensionAPI): void {
       address = await next.app.listen({ host: config.server.host, port: config.server.port });
       server = next;
       report(ctx, `pi-http listening on ${address}`);
+      serviceStatus("ready", address);
     } catch (error) { await next.close(); throw error; }
   });
   const displayFailure = (ctx: ExtensionContext, error: unknown) => {
@@ -68,7 +75,7 @@ export default function piHttp(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     latestContext = ctx;
     if (pi.getFlag("http") === true) {
-      try { await start(ctx); } catch (error) { displayFailure(ctx, error); }
+      try { await start(ctx); } catch (error) { displayFailure(ctx, error); serviceStatus("error"); }
     }
   });
   pi.on("model_select", (_event, ctx) => { latestContext = ctx; });
