@@ -27,6 +27,11 @@ const provider = createServer(async (request, response) => {
     authHeaders.push(request.headers.authorization);
     const user = body.messages.filter((message: { role: string }) => message.role === "user").at(-1);
     const toolCall = JSON.stringify(user?.content).includes("[tool]") && body.messages.at(-1)?.role !== "tool";
+    if (JSON.stringify(user?.content).includes("[fail]")) {
+      response.writeHead(500, { "content-type": "text/plain" });
+      response.end("upstream exploded");
+      return;
+    }
     response.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (delta: unknown, finish: string | null = null) => response.write(`data: ${JSON.stringify({
       id: "local-response", object: "chat.completion.chunk", created: 1, model: body.model,
@@ -85,6 +90,9 @@ try {
   assert.equal(interaction.statusCode, 409, interaction.body);
   assert.equal(interaction.json().error.code, "interaction_required");
   assert.equal(requests.length, before);
+  const failed = await chat({ message: "[fail] Trigger a provider failure." });
+  assert.equal(failed.statusCode, 502, failed.body);
+  assert.match(failed.json().error.message, /: \S/, "upstream failures must carry the provider detail");
   assert.ok((await readFile(server.service.store.chat(id)!.session_file!, "utf8")).includes("first turn"));
 
   // Discover this project as a real Pi package, through Pi's loader rather than importing its factory directly.

@@ -141,9 +141,11 @@ export class PiBackend implements AgentBackend {
       async run(message, files, signal) {
         let reply = "";
         let upstreamFailed = false;
+        let upstreamDetail: string | undefined;
         const unsubscribe = session.subscribe(event => {
           if (event.type === "message_end" && event.message.role === "assistant") {
             upstreamFailed = event.message.stopReason === "error";
+            upstreamDetail = upstreamFailed ? event.message.errorMessage : undefined;
             reply = event.message.content.filter(item => item.type === "text").map(item => item.text).join("");
           }
         });
@@ -155,12 +157,13 @@ export class PiBackend implements AgentBackend {
           await session.prompt(message + attachmentText, { source: "rpc" });
           await session.waitForIdle();
           if (interaction) throw interaction;
-          if (upstreamFailed) throw new ApiError(502, "upstream_error", "The model provider request failed.");
+          if (upstreamFailed) throw new ApiError(502, "upstream_error", upstreamDetail ? `The model provider request failed: ${upstreamDetail}` : "The model provider request failed.");
           return reply;
         } catch (error) {
           if (interaction) throw interaction;
           if (error instanceof ApiError) throw error;
-          throw new ApiError(502, "upstream_error", "Pi could not complete the model request.");
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new ApiError(502, "upstream_error", detail ? `Pi could not complete the model request: ${detail}` : "Pi could not complete the model request.");
         } finally { signal.removeEventListener("abort", abort); unsubscribe(); }
       },
       async dispose() {
