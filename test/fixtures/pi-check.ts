@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createAgentSessionFromServices, createAgentSessionServices, getPackageDir, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { PiBackend } from "../../src/pi-backend.js";
@@ -149,6 +150,17 @@ try {
     if (originalKey === undefined) delete process.env.PI_HTTP_API_KEY;
     else process.env.PI_HTTP_API_KEY = originalKey;
   }
+  // OAuth providers must keep their stored credential: the host's runtime API key must not shadow it.
+  const oauthHost = { cwd: root, isProjectTrusted: () => true, modelRegistry: {
+    getAll: () => [], getProvider: () => undefined, isUsingOAuth: () => true,
+    getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-host-runtime-key" }),
+  } } as unknown as ExtensionContext;
+  const oauthBackend = await PiBackend.create(config, () => oauthHost);
+  const oauthHandle = await oauthBackend.open({ sessionFile: null, model: { id: "local-test/model-a", name: "model-a", provider: "local-test" }, onSessionFile: () => {} });
+  try {
+    assert.equal(await oauthHandle.run("oauth turn", [], new AbortController().signal), "reply:model-a");
+    assert.equal(authHeaders.at(-1), "Bearer fake-local-key", "OAuth providers must keep their stored credential");
+  } finally { await oauthHandle.dispose(); }
   // Run the real Pi CLI headlessly through the packaged service adapter.
   const serviceConfig = join(root, "service.json");
   const serviceEnvironment = join(root, "environment.json");

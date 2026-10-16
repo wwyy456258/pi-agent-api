@@ -88,7 +88,11 @@ export class PiBackend implements AgentBackend {
     if (this.host) {
       const auth = await this.host().modelRegistry.getApiKeyAndHeaders(selected);
       if (!auth.ok) throw new ApiError(400, "model_unavailable", "Pi could not resolve the selected model credentials.");
-      if (auth.apiKey) await runtime.modelRuntime.setRuntimeApiKey(selected.provider, auth.apiKey);
+      // OAuth providers resolve credentials inside the child session: a runtime API key override
+      // would shadow the stored OAuth credential, and an OAuth-only provider then fails its auth check.
+      if (auth.apiKey && !this.host().modelRegistry.isUsingOAuth(selected)) {
+        await runtime.modelRuntime.setRuntimeApiKey(selected.provider, auth.apiKey);
+      }
       const headers = { ...selected.headers };
       for (const [name, value] of Object.entries(auth.headers ?? {})) {
         for (const previous of Object.keys(headers)) if (previous.toLowerCase() === name.toLowerCase()) delete headers[previous];
