@@ -1,10 +1,15 @@
 {
   "name": "pi-http",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "A Pi extension exposing synchronous HTTP chat and file attachments",
-  "keywords": ["pi-package", "pi-extension"],
+  "description": "Pi extension for synchronous HTTP chat, file attachments, model selection, and systemd/launchd background services",
+  "license": "MIT",
+  "author": { "name": "wwyy456258", "url": "https://github.com/wwyy456258" },
+  "repository": { "type": "git", "url": "git+https://github.com/wwyy456258/pi-http.git" },
+  "homepage": "https://github.com/wwyy456258/pi-http#readme",
+  "bugs": { "url": "https://github.com/wwyy456258/pi-http/issues" },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "keywords": ["pi-package", "pi-extension", "http", "api", "chat", "file-upload", "systemd", "launchd"],
   "engines": {
     "node": ">=22.19.0"
   },
@@ -15,12 +20,15 @@
     "scripts",
     "docs",
     "pi-http.config.example.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "node --import tsx --test test/*.test.ts test/*.test.mjs"
+    "test": "node --import tsx --test test/*.test.ts test/*.test.mjs",
+    "release:check": "npm run check && npm test && npm pack --dry-run",
+    "prepublishOnly": "npm run release:check"
   },
   "dependencies": {
     "@fastify/multipart": "10.1.4",

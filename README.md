@@ -188,13 +188,19 @@ journalctl --user -u pi-http.service -n 100 -f
 npm pack --ignore-scripts
 ```
 
-发布包包含 TypeScript 扩展源码、后台服务管理脚本、文档和示例配置，不包含 SDK、真实配置、密钥、聊天目录或数据库。源码包也可从 Git 安装：
+发布包包含 TypeScript 扩展源码、后台服务管理脚本、文档、示例配置和 MIT 许可证，不包含 SDK、真实配置、密钥、聊天目录或数据库。源码包也可从本项目 Git 仓库安装：
 
 ```bash
-pi install git:github.com/<账号>/pi-http@<版本>
+pi install git:github.com/wwyy456258/pi-http
 ```
 
-以上 Git 地址为格式示例，尚未发布仓库或 npm 包。
+npm 首次发布尚未执行。发布配置、账号和包名确认、手动发布及 Pi 包目录验证见 [发布说明](docs/publishing.md)。只做本地发布准备、不上传：
+
+```bash
+npm run release:check
+```
+
+该命令执行类型检查、测试和打包预览。将来执行 `npm publish` 时也会先自动运行这些检查；提交或推送 Git 不触发 npm 发布。
 
 ## 调用示例
 
@@ -257,3 +263,7 @@ PI_HTTP_TEST_LAUNCHD=1 node --test test/launchd.test.mjs
 其余测试覆盖 HTTP 鉴权、模型优先级、会话续接、二进制附件、上传失败清理、并发、幂等、到期、真实连接断开与 HTTP 重启。Pi 集成测试使用真实 `pi install`、包发现和扩展加载器，验证 `/http` 启停、宿主模型及运行时凭据继承、内部会话不污染前台对话，以及退出与重载清理。打包测试会解压实际 npm 产物，只链接声明的运行依赖，不放入开发用 Pi SDK，再由宿主 Pi 完成安装和调用。测试使用独立临时配置和本机模拟模型，不读取真实供应商凭据或调用付费模型，需要能够绑定本机临时端口。
 
 状态存储使用 Node 内置 SQLite；同一数据库仅供一个服务进程使用，并通过进程锁防止同时启动。异常退出后的锁最多需要约 10 秒失效，启动过程会短暂重试；未完成请求恢复为中断状态，不自动重跑。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。

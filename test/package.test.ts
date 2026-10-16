@@ -16,10 +16,16 @@ test("packed extension installs and runs with host-provided Pi SDK and productio
   const packed = await exec("npm", ["pack", "--ignore-scripts", "--json", "--cache", join(directory, "npm-cache"), "--pack-destination", directory], { cwd: project, timeout: 15000 });
   const artifact = (JSON.parse(packed.stdout) as { filename: string; files: { path: string }[] }[])[0]!;
   assert.ok(artifact.files.some(file => file.path === "src/extension.ts"));
+  assert.ok(artifact.files.some(file => file.path === "LICENSE"));
+  assert.ok(artifact.files.some(file => file.path === "docs/publishing.md"));
   assert.ok(artifact.files.every(file => !file.path.startsWith("node_modules/") && !file.path.startsWith("data/") && !file.path.startsWith("dist/") && !["pi-http.config.json", ".env", "src/cli.ts"].includes(file.path)));
   await exec("tar", ["-xzf", join(directory, artifact.filename), "-C", directory]);
   const extension = join(directory, "package");
   const manifest = JSON.parse(await readFile(join(extension, "package.json"), "utf8"));
+  assert.equal(manifest.private, undefined);
+  assert.equal(manifest.license, "MIT");
+  assert.ok(manifest.keywords.includes("pi-package"));
+  assert.equal(manifest.publishConfig.registry, "https://registry.npmjs.org/");
   assert.equal(manifest.bin["pi-http-service"], "scripts/service.mjs");
   assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], undefined);
   assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
