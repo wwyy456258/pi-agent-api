@@ -2,6 +2,8 @@
 
 [English](README.md) | **简体中文**
 
+[GitHub 仓库](https://github.com/wwyy456258/pi-http) | [问题反馈](https://github.com/wwyy456258/pi-http/issues)
+
 Pi 扩展包，在 Pi 进程内通过 HTTP 为第三方项目提供 AI 与工具执行能力，支持多轮聊天、可选文件附件和模型选择。
 
 首版提供两个业务接口：

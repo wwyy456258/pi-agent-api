@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+[GitHub repository](https://github.com/wwyy456258/pi-http) | [Report an issue](https://github.com/wwyy456258/pi-http/issues)
+
 A Pi extension that exposes AI and tool execution over HTTP from within the Pi process. It supports multi-turn chats, optional file attachments, and model selection.
 
 The initial API has two endpoints:
