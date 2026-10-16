@@ -1,30 +1,32 @@
 # pi-http
 
-Pi 扩展包，在 Pi 进程内通过 HTTP 为第三方项目提供 AI 与工具执行能力，支持多轮聊天、可选文件附件和模型选择。
+**English** | [简体中文](README.zh-CN.md)
 
-首版提供两个业务接口：
+A Pi extension that exposes AI and tool execution over HTTP from within the Pi process. It supports multi-turn chats, optional file attachments, and model selection.
 
-- `POST /v1/chat`：聊天，自动创建或继续会话，可随请求上传文件。
-- `GET /v1/models`：获取可选模型与当前默认模型。
+The initial API has two endpoints:
 
-聊天统一等待执行结束后返回 JSON，不使用 SSE。API Key 由部署者本地生成，通过 `PI_HTTP_API_KEY` 环境变量配置，调用方使用 `Authorization: Bearer <API Key>` 鉴权。
+- `POST /v1/chat`: start or continue a chat, optionally uploading files with the request.
+- `GET /v1/models`: list available models and the current default model.
 
-HTTP 接入沿用直接运行 Pi 的权限，不额外限制工具、文件访问或网络访问。
+Chat requests wait for execution to finish and return JSON. SSE is not used. Initialization generates an API key in a private `environment.json` file; `PI_HTTP_API_KEY` can override it. Clients authenticate with `Authorization: Bearer <API Key>`.
 
-接口契约、API Key 配置、文件存储、会话清理和异常处理规则见 [项目设计](docs/design.md)。扩展由 Pi 加载，HTTP 聊天使用各自的内部 Pi session，不写入前台交互会话。
+HTTP requests have the same permissions as running Pi directly. The extension adds no restrictions on tools, file access, or network access.
 
-## 安装后什么时候配置
+See the [design document (Chinese)](docs/design.md) for the API contract, authentication, file storage, chat expiration, and error handling. Pi loads the extension, and HTTP chats use separate internal Pi sessions without adding messages to the foreground conversation.
 
-需要 Node.js 22.19 或更新版本，并已安装 Pi，当前以 Pi 1.3.0 验证。先在 Pi 中配置模型和供应商凭据。
+## Installation and first-time configuration
+
+Requires Node.js 22.19 or newer and an installed Pi CLI. Tested with Pi 1.3.0. Configure your models and provider credentials in Pi first.
 
 ```bash
 npm ci --ignore-scripts
 pi install /absolute/path/to/pi-http
 ```
 
-**安装只负责让 Pi 发现扩展，不会启动 HTTP 或自动写入机器配置。第一次启动 HTTP 前执行初始化，编辑配置，再启动。** 后续升级保留现有配置。
+**Installation only registers the extension with Pi. It does not start HTTP or write machine configuration. Before starting HTTP for the first time, initialize the configuration, edit it, and then start the listener.** Upgrades preserve existing configuration.
 
-前台 Pi 中可以直接操作：
+In an interactive Pi session, run:
 
 ```text
 /http init
@@ -34,108 +36,108 @@ pi install /absolute/path/to/pi-http
 /http stop
 ```
 
-`/http init` 默认在 `/data/pi-http` 创建配置、环境文件和数据目录，并生成 HTTP API Key（已导出的 Key 会被沿用）；不会覆盖已有配置或密钥。编辑下面的主配置文件后执行 `/http start`。
+By default, `/http init` creates configuration, environment, and data directories under `/data/pi-http`, and generates an HTTP API key or reuses an exported key. Existing configuration and keys are preserved. Edit the main configuration file below before running `/http start`.
 
-| 用途 | 默认位置 |
+| Purpose | Default location |
 | --- | --- |
-| HTTP 主配置 | `/data/pi-http/config/pi-http.config.json` |
-| HTTP Key、后台环境变量 | `/data/pi-http/config/environment.json` |
-| 后台服务参数、状态 | `/data/pi-http/config/service.json`、`status.json` |
-| 聊天附件 | `/data/pi-http/chats/` |
-| 状态数据库 | `/data/pi-http/pi-http.sqlite` |
-| HTTP 接口日志 | `/data/pi-http/logs/http.jsonl` |
-| macOS 后台启动器日志 | `/data/pi-http/logs/service.log` |
+| Main HTTP configuration | `/data/pi-http/config/pi-http.config.json` |
+| HTTP key and background environment variables | `/data/pi-http/config/environment.json` |
+| Background service configuration and status | `/data/pi-http/config/service.json`, `status.json` |
+| Chat attachments | `/data/pi-http/chats/` |
+| State database | `/data/pi-http/pi-http.sqlite` |
+| HTTP request logs | `/data/pi-http/logs/http.jsonl` |
+| macOS background launcher logs | `/data/pi-http/logs/service.log` |
 
-目录不存在时自动递归创建，创建目录权限为 `0700`，配置、密钥、日志文件为 `0600`。当前用户无权创建 `/data/pi-http` 时会提示具体失败路径；可以先让管理员创建并授权该目录，或使用当前用户可写的位置：
+Missing directories are created recursively. New directories use permissions `0700`; configuration, key, and log files use `0600`. If your user cannot create `/data/pi-http`, the error identifies the failed path. Have an administrator create the directory and grant access, or choose a location your user can write to:
 
 ```text
 /http init /absolute/writable/path/pi-http
 ```
 
-此命令会打印实际配置及环境文件路径，不打印密钥。当前 Pi 随后的 `/http start` 使用该配置；下次启动 Pi 时使用打印出的 `--http-config` 路径。
+The command prints the configuration and environment file paths, without printing the key. Subsequent `/http start` commands in the current Pi instance use this configuration. On your next Pi startup, pass the printed path with `--http-config`.
 
-也可在终端初始化，无需先进入 Pi：
+You can also initialize from a terminal before entering Pi:
 
 ```bash
 SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
 node "$SERVICE" init
-# 自定义数据根目录：
+# Use a custom data root:
 node "$SERVICE" init --data-dir /absolute/writable/path/pi-http
-# 指定主配置文件的位置：
+# Choose the main configuration file location:
 node "$SERVICE" init --data-dir /absolute/writable/path/pi-http \
   --http-config /absolute/path/to/pi-http.config.json
 ```
 
-### 配置目录和模型
+### Directories and models
 
-配置示例见 `pi-http.config.example.json`。只修改 `paths.data_dir`，其余未显式覆盖的路径会随它改变；以下字段可以单独覆盖目录或文件路径：
+See `pi-http.config.example.json` for an example. Changing only `paths.data_dir` also changes paths that have not been explicitly overridden. These fields can override individual directories or files:
 
-| 配置字段 | 未配置时的值 |
+| Configuration field | Default when omitted |
 | --- | --- |
 | `paths.data_dir` | `/data/pi-http` |
-| `paths.config_dir` | `<data_dir>/config`，保存环境、后台服务配置和状态 |
+| `paths.config_dir` | `<data_dir>/config`, for the environment, background service configuration, and status |
 | `logging.directory` | `<data_dir>/logs` |
 | `chat.storage_dir` | `<data_dir>/chats` |
 | `storage.database_path` | `<data_dir>/pi-http.sqlite` |
 
-显式配置的相对路径以主配置文件所在目录为基准。主配置文件自身的位置由 `--http-config` 指定，无法通过文件里面的 `paths.config_dir` 移动自己。修改路径不会迁移旧数据库、附件或环境文件，需要部署者迁移或继续显式指定原路径。
+Explicit relative paths resolve from the directory containing the main configuration file. The main file itself is selected with `--http-config`; setting `paths.config_dir` inside it does not relocate that file. Changing paths does not migrate existing databases, attachments, or environment files. Migrate them yourself or keep explicit paths to their original locations.
 
-主配置查找顺序：`--http-config <path>` → Pi 工作目录中已有的 `pi-http.config.json`（兼容旧部署）→ `/data/pi-http/config/pi-http.config.json`。`/http config` 可显示当前读取的配置及解析后的目录，不显示密钥。
+Configuration lookup order: `--http-config <path>` → an existing `pi-http.config.json` in Pi's working directory, for compatibility with older deployments → `/data/pi-http/config/pi-http.config.json`. `/http config` shows the selected file and resolved directories without displaying the key.
 
 ```bash
 pi --http --http-config /absolute/path/to/pi-http.config.json
 ```
 
-默认监听 `127.0.0.1:3000`。局域网接入需要把 `server.host` 改为指定网卡地址或 `0.0.0.0`，并设置所需 `server.port`。HTTP 模型选择顺序：请求 `model` → 配置 `model.default` → 宿主 Pi 当前选择的默认模型；可用模型由 `/v1/models` 查询。
+The default listener is `127.0.0.1:3000`. For LAN access, set `server.host` to the appropriate interface address or `0.0.0.0`, and set `server.port`. Model selection follows this order: request `model` → configuration `model.default` → the host Pi session's current default model. Query `/v1/models` for available models.
 
-配置修改后 `/http stop`、`/http start` 生效。`--http` 会在 Pi 会话启动或重载完成后自动监听；Pi 退出或切换会话时关闭当前监听。HTTP 聊天保存在各自的内部 Pi session，前台对话不加入这些消息。
+After editing configuration, run `/http stop` followed by `/http start`. With `--http`, the listener starts automatically when a Pi session starts or finishes reloading. Exiting Pi or switching sessions closes the current listener. HTTP chats use their own internal Pi sessions and do not add messages to the foreground conversation.
 
-### API Key 在哪里
+### Finding and changing the API key
 
-初始化生成或沿用的 HTTP API Key 位于上述 `environment.json` 的 `PI_HTTP_API_KEY` 字段。将这个 Key 配置给调用方，使用 `Authorization: Bearer <Key>`。也可自行用 `openssl rand -hex 32` 生成并替换该字段。
+The generated or reused HTTP API key is the `PI_HTTP_API_KEY` field in `environment.json`. Give this key to your clients and use `Authorization: Bearer <Key>`. You can also generate a key with `openssl rand -hex 32` and replace that field.
 
-下方 curl 示例需要先设置 `export PI_HTTP_API_KEY='<环境文件中的 Key>'`。
+For the curl examples below, first set `export PI_HTTP_API_KEY='<Key from the environment file>'`.
 
-前台扩展优先读取 Pi 进程环境中的 `PI_HTTP_API_KEY`，未设置时读取 `paths.config_dir/environment.json`；其他模型供应商凭据仍由 Pi 自己管理。不要将 HTTP Key 写入业务配置文件、仓库或请求日志。
+The foreground extension first checks `PI_HTTP_API_KEY` in the Pi process environment. If it is unset, it reads `paths.config_dir/environment.json`. Pi continues to manage model provider credentials itself. Keep the HTTP key out of business configuration, the repository, and request logs.
 
-更换进程环境变量中的 Key 需要重启 Pi；使用环境文件中的 Key 时，前台 `/http stop` 后 `/http start` 重新读取，后台服务执行 `restart`。已有进程环境变量会覆盖环境文件中的同名 Key。
+Changing a key supplied through the process environment requires restarting Pi. When using the environment file, restart the foreground HTTP listener with `/http stop` and `/http start`, or run `restart` for a background service. A key already set in the process environment takes precedence over the same field in the file.
 
-## 接口日志
+## HTTP request logs
 
-默认启用文件日志，前台 Pi 和后台运行都写入 `logging.directory/http.jsonl`，每行一个 JSON 对象：
+File logging is enabled by default. Both interactive and background Pi write one JSON object per line to `logging.directory/http.jsonl`:
 
-- `request_received`：UTC 时间、请求 ID、HTTP 方法、路径、来源 IP。
-- `request_input`：通过鉴权和格式校验后的 JSON 输入，在模型执行前记录。
-- `response_sent`：UTC 时间、同一请求 ID、状态码、耗时毫秒、输入和输出、响应字节数，以及文件数量、各文件字节数和总字节数。
-- `request_aborted`：客户端断开，记录已接收的文件大小，状态记为 `499`。
+- `request_received`: UTC timestamp, request ID, HTTP method, path, and source IP.
+- `request_input`: JSON input after authentication and format validation, recorded before model execution.
+- `response_sent`: UTC timestamp, the same request ID, status code, duration in milliseconds, input and output, response bytes, file count, individual file sizes, and total file bytes.
+- `request_aborted`: client disconnect, including file bytes received so far; the logged status is `499`.
 
-鉴权失败、参数错误和上游错误也会记录；未通过鉴权的请求不记录业务输入。附件只记数量和大小，不记文件名、路径、内容或二进制数据。请求头、URL 查询参数不会进入日志，已知凭据和 Bearer Token 会脱敏。错误详情保留可用于排查的部分。
+Authentication failures, invalid requests, and upstream errors are logged too. Unauthenticated requests do not have their business input logged. Attachments are represented only by counts and sizes, without filenames, paths, content, or binary data. Request headers and URL query parameters are excluded. Known credentials and Bearer tokens are redacted while useful error details are retained.
 
-默认记录聊天输入与回复；`logging.log_bodies: false` 可仅保留元数据。`logging.max_body_chars` 默认 `16384`，超出部分使用带 `truncated` 标记的预览。接口日志按 `logging.max_file_bytes`（默认 10 MiB）轮转，最多保留 `logging.max_files`（默认 7）个归档，名称为 `http.jsonl.1` 等；一条记录不会被拆分。
+Chat input and replies are logged by default. Set `logging.log_bodies: false` to log metadata only. `logging.max_body_chars` defaults to `16384`; longer values are replaced with a preview marked `truncated`. Logs rotate at `logging.max_file_bytes`, which defaults to 10 MiB, with up to `logging.max_files` archives, defaulting to 7. Archives are named `http.jsonl.1`, and so on. A single record is never split across files.
 
 ```bash
 tail -n 100 -F /data/pi-http/logs/http.jsonl
 ```
 
-日志目录无法创建或文件无法打开时，HTTP 启动会报错。运行中写入失败会带时间和路径报告到 stderr，业务请求仍可继续。聊天 TTL 只清理聊天数据，不控制日志保留。
+HTTP startup fails if the log directory cannot be created or the log file cannot be opened. Write failures during operation are reported to stderr with the time and path, while business requests can continue. Chat TTL controls chat cleanup, not log retention.
 
-## 后台运行与自动重启
+## Background operation and automatic restarts
 
-Linux 使用当前用户的 systemd user service，macOS 使用当前用户的 launchd LaunchAgent。启动器运行真实 Pi CLI 的 RPC 模式，加载本扩展、保持输入管道、等待 HTTP 就绪并转发停止信号；异常重启交给操作系统处理。
+Linux uses a systemd user service; macOS uses a launchd LaunchAgent. The launcher runs the real Pi CLI in RPC mode, loads this extension, keeps the input pipe open, waits for HTTP readiness, and forwards shutdown signals. The operating system manages restarts after failures.
 
-完成初始化、编辑配置，并在目标 Pi 工作目录完成模型配置和需要的信任授权后安装后台服务：
+Initialize and edit the configuration, and complete model setup and any required project trust authorization in the target Pi working directory before installing the service:
 
 ```bash
 SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
 node "$SERVICE" init
-# 先编辑 /data/pi-http/config/pi-http.config.json，再安装：
+# Edit /data/pi-http/config/pi-http.config.json before installing:
 node "$SERVICE" install --cwd /absolute/path/to/workspace --pi "$(command -v pi)"
 node "$SERVICE" start
 node "$SERVICE" status
 node "$SERVICE" logs
 ```
 
-自定义主配置路径时，安装和后续管理均带上同一个参数：
+When using a custom main configuration file, pass the same path during installation and subsequent management:
 
 ```bash
 node "$SERVICE" install --http-config /absolute/path/to/pi-http.config.json \
@@ -148,103 +150,103 @@ node "$SERVICE" logs --http-config /absolute/path/to/pi-http.config.json
 node "$SERVICE" uninstall --http-config /absolute/path/to/pi-http.config.json
 ```
 
-`install` 写服务定义，配置登录后自动启动，但不会立即启动。`start` 等待 HTTP 扩展确认就绪才返回成功。`stop` 正常停止，`restart` 正常停止后再启动，`uninstall` 取消自动启动并保留配置、凭据、日志和聊天数据。更新代码或安装参数前先 `stop`，再更新代码、`install` 和 `start`；普通 HTTP 配置变更只需 `restart`。
+`install` writes the service definition and enables startup at login, but does not immediately start Pi. `start` waits for the HTTP extension to confirm readiness. `stop` shuts down gracefully; `restart` stops gracefully and then starts again. `uninstall` disables automatic startup while preserving configuration, credentials, logs, and chat data. Before updating code or installation arguments, run `stop`, update, run `install`, and then `start`. Ordinary HTTP configuration changes only require `restart`.
 
-后台服务不会读取 shell 的 `.zshrc` 或 `.bashrc`。安装时保存 `PATH`、HTTP Key、可选 `PI_CODING_AGENT_DIR`，并沿用生成的环境文件。额外的供应商环境变量写入 `environment.json`，或用 `install --env-file /absolute/path/to/variables.json` 导入 JSON 对象（值必须为字符串）；显式环境文件优先于当前 shell，同名 shell 变量优先于已保存的值。导入是复制，后续修改源文件不生效。
+Background services do not read shell files such as `.zshrc` or `.bashrc`. Installation captures `PATH`, the HTTP key, and optional `PI_CODING_AGENT_DIR`, and reuses the generated environment file. Put extra provider environment variables in `environment.json`, or import a JSON object with string values using `install --env-file /absolute/path/to/variables.json`. An explicit environment file overrides the current shell, whose values override previously saved values. Imports copy values; later edits to the source file do not take effect automatically.
 
-`paths.config_dir` 控制 `service.json`、`environment.json`、`status.json`；`logging.directory` 控制接口日志及 macOS 启动器日志。服务定义必须放在操作系统要求的位置：Linux 为 `~/.config/systemd/user/pi-http.service`，macOS 为 `~/Library/LaunchAgents/dev.pi-http.plist`。每个用户默认管理一个服务。
+`paths.config_dir` controls `service.json`, `environment.json`, and `status.json`. `logging.directory` controls HTTP logs and the macOS launcher log. Service definitions must remain in the locations required by the operating system: `~/.config/systemd/user/pi-http.service` on Linux, and `~/Library/LaunchAgents/dev.pi-http.plist` on macOS. Each user manages one service by default.
 
-服务记录安装时 Node、Pi 和扩展包的绝对路径。移动目录或更换运行时安装位置后重新安装服务定义。不要将真实配置、数据库或附件放到升级时会删除的包缓存或临时目录。前后台 Pi 不要同时监听相同端口或打开同一数据库。
+Installation records absolute paths to Node, Pi, and the extension package. Reinstall the service definition after moving directories or changing runtime installation paths. Keep real configuration, databases, and attachments out of package caches or temporary directories that may be deleted during upgrades. Foreground and background Pi must not use the same listener port or database at the same time.
 
-默认启动期限 60 秒，可用 `install --startup-timeout 120` 调整。总停止期限为 `max(45, HTTP shutdown_grace_seconds + 10)`，可通过 `--stop-timeout` 设置，必须大于 HTTP 宽限；增加 HTTP 宽限后重新安装服务定义。超过期限会强制停止，已中断请求不自动重跑。后台模式不能代替用户完成确认，HTTP 执行遇到必须交互时返回 `interaction_required`。
+The default startup deadline is 60 seconds; adjust it with `install --startup-timeout 120`. The total shutdown deadline is `max(45, HTTP shutdown_grace_seconds + 10)`. Override it with `--stop-timeout`, which must exceed the HTTP grace period. Reinstall the service definition after increasing that grace period. Processes are forcibly stopped after the deadline, and interrupted requests are not automatically rerun. Background operation cannot answer human confirmations; HTTP execution that requires interaction returns `interaction_required`.
 
 ### Linux
 
-安装器执行 `systemctl --user daemon-reload` 和 `enable pi-http.service`。失败后每 5 秒重试，60 秒最多启动 5 次；修正后运行 `start`，会清除失败计数。systemd 在 HTTP 确认就绪前可能已显示 `active`，以管理入口 `runtime.state: "ready"` 为准。
+Installation runs `systemctl --user daemon-reload` and `enable pi-http.service`. Failed services retry every 5 seconds, with at most 5 starts in 60 seconds. After fixing the problem, run `start` to clear the failure counter. systemd may show `active` before HTTP is ready; use the management command's `runtime.state: "ready"` as the readiness indicator.
 
-`logs` 查看接口文件日志；启动器的进程日志（含时间）通过下面命令查看：
+`logs` follows the HTTP log file. View timestamped launcher process logs with:
 
 ```bash
 journalctl --user -u pi-http.service -n 100 -f
 ```
 
-需要可用的 systemd 用户管理器。默认随用户登录启动；无人登录或系统启动后也要运行时，由管理员为该用户启用 `loginctl enable-linger "$USER"`。不会自动改成 root 系统服务。
+A working systemd user manager is required. The default service starts at login. To keep it running without a logged-in user or start it after system boot, have an administrator enable `loginctl enable-linger "$USER"` for the account. The installer does not convert it into a root system service.
 
 ### macOS
 
-需要当前用户 GUI 登录域。`start` 首次使用 `launchctl bootstrap gui/<UID> <plist>`，已加载时使用 `kickstart`；`stop` 使用 `bootout` 卸载，避免立即拉起。异常退出会自动重启，重试间隔至少约 5 秒。保留 plist 时下次登录仍自动运行，永久取消用 `uninstall`。
+Requires the current user's GUI login domain. On first start, `start` uses `launchctl bootstrap gui/<UID> <plist>`; an already loaded job uses `kickstart`. `stop` unloads the job with `bootout`, preventing an immediate restart. Unexpected exits trigger restarts with a throttle interval of approximately 5 seconds or longer. If the plist is retained, the job starts again at the next login. Use `uninstall` to disable it permanently.
 
-`logs` 同时查看 HTTP 和启动器日志，启动器日志含 UTC 时间。`service.log` 不自动轮转，长期部署可由系统配置轮转。LaunchAgent 在用户登录后运行，注销会停止；锁屏或关闭终端不会停止，机器睡眠时无法处理请求。未提供系统级 LaunchDaemon。
+`logs` follows both HTTP and launcher logs. Launcher logs include UTC timestamps. `service.log` is not rotated automatically; configure system log rotation for long-running deployments. A LaunchAgent runs after login and stops at logout. Locking the screen or closing the terminal does not stop it, but the machine cannot serve requests while asleep. A system-level LaunchDaemon is not provided.
 
-### 旧部署升级
+### Upgrading older deployments
 
-工作目录的旧 `pi-http.config.json` 仍可识别。升级前在其中设置 `paths.data_dir` 为实际希望使用的可写根目录；已有 `chat.storage_dir`、`storage.database_path` 的显式值继续保留，不会自动搬迁。
+An existing `pi-http.config.json` in the working directory is still recognized. Before upgrading, set its `paths.data_dir` to the writable root you want to use. Existing explicit `chat.storage_dir` and `storage.database_path` values are preserved; files are not moved automatically.
 
-旧版后台服务的已有 `service.json` 仍可直接运行；未指定主配置且未发现新配置时，管理入口会尝试旧的用户服务配置目录。迁移服务配置前，先停止旧服务、复制需要保留的环境文件、用新主配置重新 `install`，然后所有管理命令指定新的 `--http-config`。不要在旧服务运行时更换路径。
+An older background service's existing `service.json` can still run directly. If no main configuration is specified or found, the management entry point tries the old user service configuration directory. Before migrating service configuration, stop the old service, copy the environment file you want to keep, and run `install` with the new main configuration. Then pass the new `--http-config` path to all management commands. Do not change paths while the old service is running.
 
-## 打包
+## Packaging
 
 ```bash
 npm pack --ignore-scripts
 ```
 
-发布包包含 TypeScript 扩展源码、后台服务管理脚本、文档、示例配置和 MIT 许可证，不包含 SDK、真实配置、密钥、聊天目录或数据库。源码包也可从本项目 Git 仓库安装：
+The package contains TypeScript extension source, background service scripts, documentation, example configuration, and the MIT license. It excludes the SDK, real configuration, keys, chat directories, and databases. You can also install directly from this project's Git repository:
 
 ```bash
 pi install git:github.com/wwyy456258/pi-http
 ```
 
-npm 首次发布尚未执行。发布配置、账号和包名确认、手动发布及 Pi 包目录验证见 [发布说明](docs/publishing.md)。只做本地发布准备、不上传：
+The first npm release has not been published. See the [publishing guide (Chinese)](docs/publishing.md) for release configuration, account and package name checks, manual publication, and Pi catalog verification. To prepare a release locally without uploading:
 
 ```bash
 npm run release:check
 ```
 
-该命令执行类型检查、测试和打包预览。将来执行 `npm publish` 时也会先自动运行这些检查；提交或推送 Git 不触发 npm 发布。
+This command runs type checking, tests, and a package preview. A future `npm publish` also runs these checks first. Git commits and pushes do not trigger an npm release.
 
-## 调用示例
+## API examples
 
-查询模型：
+List models:
 
 ```bash
 curl http://127.0.0.1:3000/v1/models \
   -H "Authorization: Bearer $PI_HTTP_API_KEY"
 ```
 
-首次聊天，自动创建聊天目录与对话：
+Start a chat, automatically creating the chat directory and conversation:
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat \
   -H "Authorization: Bearer $PI_HTTP_API_KEY" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: example-first-message-001' \
-  -d '{"message":"介绍一下当前工作目录","ttl_seconds":86400}'
+  -d '{"message":"Describe the current working directory","ttl_seconds":86400}'
 ```
 
-保存响应中的 `chat_id`，继续对话：
+Save the returned `chat_id` and continue the conversation:
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat \
   -H "Authorization: Bearer $PI_HTTP_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"chat_id":"<上次返回的聊天ID>","message":"再详细说说"}'
+  -d '{"chat_id":"<chat ID from the previous response>","message":"Tell me more"}'
 ```
 
-随消息附带文件，`payload` 必须放在 `files` 前面：
+Attach files to a message. The `payload` field must come before `files`:
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat \
   -H "Authorization: Bearer $PI_HTTP_API_KEY" \
-  -F 'payload={"message":"分析这些资料"}' \
+  -F 'payload={"message":"Analyze these documents"}' \
   -F 'files=@/absolute/path/to/report.pdf' \
   -F 'files=@/absolute/path/to/data.csv'
 ```
 
-文件默认不限类型、大小和数量，按流保存到聊天目录，需要时由 Pi 读取。通过 `upload` 配置可限制大小和数量，`0` 表示不限。Pi 的工作目录不会切换到附件目录。
+Files have no default type, size, or count restrictions. They are streamed into the chat directory and read by Pi as needed. Configure `upload` to limit sizes or file counts; `0` means unlimited. Pi's working directory does not switch to the attachment directory.
 
-聊天请求同步等待最终结果；客户端断线会请求取消，已经发生的工具操作不会回滚。可选 `Idempotency-Key` 用于重放同一次提交的结果，重新执行必须换新的 Key。同一聊天忙碌时返回 `409`，到期后返回 `410`。聊天清理不会删除 Pi 原生 session 文件。
+Chat requests wait synchronously for the final result. A client disconnect requests cancellation; tool operations that have already happened are not rolled back. The optional `Idempotency-Key` replays the result of the same submission. Use a new key to execute again. A busy chat returns `409`; an expired chat returns `410`. Chat cleanup does not delete native Pi session files.
 
-## 开发与验证
+## Development and verification
 
 ```bash
 npm run check
@@ -252,18 +254,18 @@ npm run build
 npm test
 ```
 
-macOS 可额外运行原生 launchd 测试，使用唯一临时任务验证崩溃重启、旧 Pi 进程回收和正常停止，结束后卸载任务：
+On macOS, you can also run the native launchd test. It creates a uniquely named temporary job, verifies crash restarts, old Pi process cleanup, and graceful shutdown, then unloads the job:
 
 ```bash
 PI_HTTP_TEST_LAUNCHD=1 node --test test/launchd.test.mjs
 ```
 
-配置和日志测试覆盖初始化不覆盖现有文件、密钥回退、目录自动创建、接口输入输出、文件大小、日志轮转、正文截断和错误凭据脱敏。服务测试覆盖两种平台的定义生成与管理命令、权限和路径转义、RPC 输入保持、启动失败与超时、停止信号和强制退出；macOS 使用系统 `plutil` 校验生成的 plist。Pi 集成测试还会启动真实 Pi CLI，通过后台启动器执行 HTTP 聊天和工具调用，并验证退出清理与端口占用失败。服务管理命令用隔离的模拟执行器验证，不会给测试机器安装长期后台任务；Linux systemd 的实际运行需要在 Linux 上验收。
+Configuration and logging tests cover initialization without overwriting existing files, key fallback, automatic directory creation, request input and output, file sizes, log rotation, body truncation, and credential redaction in errors. Service tests cover definition generation and management commands for both platforms, permissions and path escaping, keeping RPC input open, startup failures and timeouts, signal forwarding, and forced termination. macOS tests validate generated plists with system `plutil`. Pi integration tests also launch the real Pi CLI through the background launcher, execute HTTP chat and tool calls, and check shutdown cleanup and port conflicts. Management commands use an isolated mock executor and do not install persistent services on the test machine. Actual systemd operation still needs acceptance testing on Linux.
 
-其余测试覆盖 HTTP 鉴权、模型优先级、会话续接、二进制附件、上传失败清理、并发、幂等、到期、真实连接断开与 HTTP 重启。Pi 集成测试使用真实 `pi install`、包发现和扩展加载器，验证 `/http` 启停、宿主模型及运行时凭据继承、内部会话不污染前台对话，以及退出与重载清理。打包测试会解压实际 npm 产物，只链接声明的运行依赖，不放入开发用 Pi SDK，再由宿主 Pi 完成安装和调用。测试使用独立临时配置和本机模拟模型，不读取真实供应商凭据或调用付费模型，需要能够绑定本机临时端口。
+Other tests cover HTTP authentication, model precedence, chat continuation, binary attachments, failed-upload cleanup, concurrency, idempotency, expiration, real socket disconnects, and HTTP restarts. Pi integration tests use real `pi install`, package discovery, and extension loading to verify `/http` lifecycle operations, inheritance of host models and runtime credentials, isolation from the foreground conversation, and cleanup on exit and reload. Packaging tests extract the actual npm artifact, link only declared runtime dependencies without the development Pi SDK, and let the host Pi install and invoke it. Tests use isolated temporary configuration and a local mock model. They do not read real provider credentials or call paid models, and require permission to bind temporary local ports.
 
-状态存储使用 Node 内置 SQLite；同一数据库仅供一个服务进程使用，并通过进程锁防止同时启动。异常退出后的锁最多需要约 10 秒失效，启动过程会短暂重试；未完成请求恢复为中断状态，不自动重跑。
+State is stored in Node's built-in SQLite. A database can be used by only one service process at a time, enforced with a process lock. A lock left by an abnormal exit can take about 10 seconds to become stale; startup retries briefly. Unfinished requests recover as interrupted and are not automatically rerun.
 
-## 许可证
+## License
 
-本项目使用 [MIT License](LICENSE)。
+This project uses the [MIT License](LICENSE).
