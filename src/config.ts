@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { readConfiguration, resolveDirectories } from "../scripts/configuration.mjs";
+import { defaultDatabasePath, readConfiguration, resolveDirectories } from "../scripts/configuration.mjs";
 
 export interface Config {
   apiKey: string;
@@ -77,7 +77,7 @@ export async function loadConfig(options: {
       if (typeof environment.PI_HTTP_API_KEY === "string") apiKey = environment.PI_HTTP_API_KEY;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
-  if (!apiKey?.trim()) throw new Error("PI_HTTP_API_KEY is required. Run /http init or pi-http-service init before starting HTTP.");
+  if (!apiKey?.trim()) throw new Error("PI_HTTP_API_KEY is required. Run /http init or pi-agent-api-service init before starting HTTP.");
   const ttl = num(chat.ttl_seconds, 86400, "chat.ttl_seconds", 1);
   if (!validTtl(ttl)) throw new Error("chat.ttl_seconds is outside the supported timestamp range.");
   const interval = num(chat.cleanup_interval_seconds, 300, "chat.cleanup_interval_seconds", 1);
@@ -100,7 +100,7 @@ export async function loadConfig(options: {
     model: model.default === undefined ? {} : { default: str(model.default, "", "model.default") },
     chat: { storage_dir: resolve(base, str(chat.storage_dir, join(directories.dataDir, "chats"), "chat.storage_dir")),
       ttl_seconds: ttl, cleanup_interval_seconds: interval },
-    storage: { database_path: resolve(base, str(storage.database_path, join(directories.dataDir, "pi-http.sqlite"), "storage.database_path")) },
+    storage: { database_path: resolve(base, str(storage.database_path, defaultDatabasePath(directories.dataDir, configPath), "storage.database_path")) },
     upload: {
       max_file_bytes: num(upload.max_file_bytes, 0, "upload.max_file_bytes"),
       max_request_bytes: num(upload.max_request_bytes, 0, "upload.max_request_bytes"),

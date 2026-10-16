@@ -23,8 +23,8 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 test('native launchd restarts a crashed adapter, reaps its Pi process and supports graceful bootout', {
   skip: process.platform !== 'darwin' || process.env.PI_HTTP_TEST_LAUNCHD !== '1', timeout: 60000,
 }, async t => {
-  const root = await mkdtemp('/private/tmp/pi-http-launchd-test-');
-  const uniqueLabel = `dev.pi-http.test.${randomUUID()}`;
+  const root = await mkdtemp('/private/tmp/pi-agent-api-launchd-test-');
+  const uniqueLabel = `dev.pi-agent-api.test.${randomUUID()}`;
   const target = `gui/${process.getuid()}/${uniqueLabel}`;
   let loaded = false;
   t.after(async () => {
@@ -48,7 +48,7 @@ process.on('SIGTERM', ()=>{writeFileSync(${JSON.stringify(join(root, 'stopped-')
   await writePrivate(paths.environment, JSON.stringify({ PI_HTTP_API_KEY: 'native-test-key' }));
   await writePrivate(paths.config, JSON.stringify(config));
   const definition = join(root, 'job.plist');
-  await writeFile(definition, renderService(config, paths).replaceAll('dev.pi-http', uniqueLabel));
+  await writeFile(definition, renderService(config, paths).replaceAll('dev.pi-agent-api', uniqueLabel));
   await exec('launchctl', ['bootstrap', `gui/${process.getuid()}`, definition], { timeout: 10000 });
   loaded = true;
   const state = () => readFile(paths.status, 'utf8').then(JSON.parse).catch(() => null);

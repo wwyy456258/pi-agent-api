@@ -21,11 +21,11 @@ export class HttpLog {
     }
     return log;
   }
-  body(value: unknown): unknown {
+  body(value: unknown, truncate = true): unknown {
     if (!this.config.logging.enabled || !this.config.logging.log_bodies || value === undefined) return undefined;
     const text = redact(JSON.stringify(value, (key, item: unknown) =>
       /authorization|api[_-]?key|access[_-]?token|password|secret/i.test(key) ? "[redacted]" : typeof item === "string" ? redact(item, this.secrets) : item), this.secrets);
-    if (text.length > this.config.logging.max_body_chars) return {
+    if (truncate && text.length > this.config.logging.max_body_chars) return {
       truncated: true, original_chars: text.length, preview: text.slice(0, this.config.logging.max_body_chars),
     };
     return JSON.parse(text) as unknown;
@@ -53,7 +53,21 @@ export class HttpLog {
       this.bytes += Buffer.byteLength(line);
     });
     this.queue = operation.catch(error => {
-      process.stderr.write(`${new Date().toISOString()} pi-http: logging failed (${(error as NodeJS.ErrnoException).code ?? "unknown"}) at ${this.path}\n`);
+      process.stderr.write(`${new Date().toISOString()} pi-agent-api: logging failed (${(error as NodeJS.ErrnoException).code ?? "unknown"}) at ${this.path}\n`);
+    });
+    return this.queue;
+  }
+  /** Called while the chat lock is held; expiry cannot remove the directory during this append. */
+  appendChat(chatId: string, fields: Record<string, unknown>): Promise<void> {
+    if (!this.file || this.closed) return Promise.resolve();
+    const path = join(this.config.chat.storage_dir, chatId, "conversation.jsonl");
+    const line = `${JSON.stringify({ time: new Date().toISOString(), event: "chat_turn", chat_id: chatId, ...fields })}\n`;
+    const operation = this.queue.then(async () => {
+      const file = await open(path, "a", 0o600);
+      try { await file.writeFile(line); } finally { await file.close(); }
+    });
+    this.queue = operation.catch(error => {
+      process.stderr.write(`${new Date().toISOString()} pi-agent-api: logging failed (${(error as NodeJS.ErrnoException).code ?? "unknown"}) at ${path}\n`);
     });
     return this.queue;
   }

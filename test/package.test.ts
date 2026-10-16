@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 
 test("packed extension installs and runs with host-provided Pi SDK and production dependencies only", { timeout: 60000 }, async t => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-http-package-"));
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-api-package-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const project = fileURLToPath(new URL("../", import.meta.url));
   const exec = promisify(execFile);
@@ -18,7 +18,7 @@ test("packed extension installs and runs with host-provided Pi SDK and productio
   assert.ok(artifact.files.some(file => file.path === "src/extension.ts"));
   assert.ok(artifact.files.some(file => file.path === "LICENSE"));
   assert.ok(artifact.files.some(file => file.path === "docs/publishing.md"));
-  assert.ok(artifact.files.every(file => !file.path.startsWith("node_modules/") && !file.path.startsWith("data/") && !file.path.startsWith("dist/") && !["pi-http.config.json", ".env", "src/cli.ts"].includes(file.path)));
+  assert.ok(artifact.files.every(file => !file.path.startsWith("node_modules/") && !file.path.startsWith("data/") && !file.path.startsWith("dist/") && !["pi-agent-api.config.json", "pi-http.config.json", ".env", "src/cli.ts"].includes(file.path)));
   await exec("tar", ["-xzf", join(directory, artifact.filename), "-C", directory]);
   const extension = join(directory, "package");
   const manifest = JSON.parse(await readFile(join(extension, "package.json"), "utf8"));
@@ -36,10 +36,13 @@ test("packed extension installs and runs with host-provided Pi SDK and productio
     await symlink(await realpath(join(project, "node_modules", name)), destination, "dir");
   }
   assert.equal(existsSync(join(extension, "node_modules/@earendil-works/pi-coding-agent")), false);
-  const serviceBin = join(directory, "pi-http-service");
-  await symlink(join(extension, "scripts/service.mjs"), serviceBin);
-  const help = await exec(process.execPath, [serviceBin, "--help"]);
-  assert.match(help.stdout, /systemd/);
+  for (const name of ["pi-agent-api-service", "pi-http-service"]) {
+    const serviceBin = join(directory, name);
+    await symlink(join(extension, manifest.bin[name]), serviceBin);
+    const help = await exec(process.execPath, [serviceBin, "--help"]);
+    assert.match(help.stdout, /Usage: pi-agent-api-service/);
+    assert.match(help.stdout, /systemd/);
+  }
   const runtime = join(directory, "runtime");
   await mkdir(runtime);
   const result = await exec(process.execPath, ["--import", "tsx", join(project, "test/fixtures/pi-check.ts"), runtime], {

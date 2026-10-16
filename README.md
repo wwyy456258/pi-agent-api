@@ -1,4 +1,4 @@
-# pi-http
+# pi-agent-api
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -21,9 +21,17 @@ See the [design document (Chinese)](docs/design.md) for the API contract, authen
 
 Requires Node.js 22.19 or newer and an installed Pi CLI. Tested with Pi 1.3.0. Configure your models and provider credentials in Pi first.
 
+Install from npm after the first release:
+
+```bash
+pi install npm:pi-agent-api
+```
+
+For local development, install dependencies in the cloned repository and register its path:
+
 ```bash
 npm ci --ignore-scripts
-pi install /absolute/path/to/pi-http
+pi install /absolute/path/to/pi-agent-api
 ```
 
 **Installation only registers the extension with Pi. It does not start HTTP or write machine configuration. Before starting HTTP for the first time, initialize the configuration, edit it, and then start the listener.** Upgrades preserve existing configuration.
@@ -38,22 +46,23 @@ In an interactive Pi session, run:
 /http stop
 ```
 
-By default, `/http init` creates configuration, environment, and data directories under `/data/pi-http`, and generates an HTTP API key or reuses an exported key. Existing configuration and keys are preserved. Edit the main configuration file below before running `/http start`.
+By default, `/http init` creates configuration, environment, and data directories under `/data/pi-agent-api`, and generates an HTTP API key or reuses an exported key. Existing configuration and keys are preserved. Edit the main configuration file below before running `/http start`.
 
 | Purpose | Default location |
 | --- | --- |
-| Main HTTP configuration | `/data/pi-http/config/pi-http.config.json` |
-| HTTP key and background environment variables | `/data/pi-http/config/environment.json` |
-| Background service configuration and status | `/data/pi-http/config/service.json`, `status.json` |
-| Chat attachments | `/data/pi-http/chats/` |
-| State database | `/data/pi-http/pi-http.sqlite` |
-| HTTP request logs | `/data/pi-http/logs/http.jsonl` |
-| macOS background launcher logs | `/data/pi-http/logs/service.log` |
+| Main HTTP configuration | `/data/pi-agent-api/config/pi-agent-api.config.json` |
+| HTTP key and background environment variables | `/data/pi-agent-api/config/environment.json` |
+| Background service configuration and status | `/data/pi-agent-api/config/service.json`, `status.json` |
+| Chat attachments | `/data/pi-agent-api/chats/` |
+| Per-chat input/output | `/data/pi-agent-api/chats/<chat_id>/conversation.jsonl` |
+| State database | `/data/pi-agent-api/pi-agent-api.sqlite` |
+| HTTP request logs | `/data/pi-agent-api/logs/http.jsonl` |
+| macOS background launcher logs | `/data/pi-agent-api/logs/service.log` |
 
-Missing directories are created recursively. New directories use permissions `0700`; configuration, key, and log files use `0600`. If your user cannot create `/data/pi-http`, the error identifies the failed path. Have an administrator create the directory and grant access, or choose a location your user can write to:
+Missing directories are created recursively. New directories use permissions `0700`; configuration, key, and log files use `0600`. If your user cannot create `/data/pi-agent-api`, the error identifies the failed path. Have an administrator create the directory and grant access, or choose a location your user can write to:
 
 ```text
-/http init /absolute/writable/path/pi-http
+/http init /absolute/writable/path/pi-agent-api
 ```
 
 The command prints the configuration and environment file paths, without printing the key. Subsequent `/http start` commands in the current Pi instance use this configuration. On your next Pi startup, pass the printed path with `--http-config`.
@@ -61,33 +70,33 @@ The command prints the configuration and environment file paths, without printin
 You can also initialize from a terminal before entering Pi:
 
 ```bash
-SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
+SERVICE=/absolute/path/to/pi-agent-api/scripts/service.mjs
 node "$SERVICE" init
 # Use a custom data root:
-node "$SERVICE" init --data-dir /absolute/writable/path/pi-http
+node "$SERVICE" init --data-dir /absolute/writable/path/pi-agent-api
 # Choose the main configuration file location:
-node "$SERVICE" init --data-dir /absolute/writable/path/pi-http \
-  --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" init --data-dir /absolute/writable/path/pi-agent-api \
+  --http-config /absolute/path/to/pi-agent-api.config.json
 ```
 
 ### Directories and models
 
-See `pi-http.config.example.json` for an example. Changing only `paths.data_dir` also changes paths that have not been explicitly overridden. These fields can override individual directories or files:
+See `pi-agent-api.config.example.json` for an example. Changing only `paths.data_dir` also changes paths that have not been explicitly overridden. These fields can override individual directories or files:
 
 | Configuration field | Default when omitted |
 | --- | --- |
-| `paths.data_dir` | `/data/pi-http` |
+| `paths.data_dir` | `/data/pi-agent-api` |
 | `paths.config_dir` | `<data_dir>/config`, for the environment, background service configuration, and status |
 | `logging.directory` | `<data_dir>/logs` |
 | `chat.storage_dir` | `<data_dir>/chats` |
-| `storage.database_path` | `<data_dir>/pi-http.sqlite` |
+| `storage.database_path` | `<data_dir>/pi-agent-api.sqlite` |
 
 Explicit relative paths resolve from the directory containing the main configuration file. The main file itself is selected with `--http-config`; setting `paths.config_dir` inside it does not relocate that file. Changing paths does not migrate existing databases, attachments, or environment files. Migrate them yourself or keep explicit paths to their original locations.
 
-Configuration lookup order: `--http-config <path>` → an existing `pi-http.config.json` in Pi's working directory, for compatibility with older deployments → `/data/pi-http/config/pi-http.config.json`. `/http config` shows the selected file and resolved directories without displaying the key.
+Configuration lookup order: `--http-config <path>` → working-directory `pi-agent-api.config.json` → working-directory `pi-http.config.json` → `/data/pi-agent-api/config/pi-agent-api.config.json` → old `/data/pi-http/config/pi-http.config.json`. `/http config` shows the selected file and resolved directories without displaying the key.
 
 ```bash
-pi --http --http-config /absolute/path/to/pi-http.config.json
+pi --http --http-config /absolute/path/to/pi-agent-api.config.json
 ```
 
 The default listener is `127.0.0.1:3000`. For LAN access, set `server.host` to the appropriate interface address or `0.0.0.0`, and set `server.port`. Model selection follows this order: request `model` → configuration `model.default` → the host Pi session's current default model. Query `/v1/models` for available models.
@@ -118,10 +127,23 @@ Authentication failures, invalid requests, and upstream errors are logged too. U
 Chat input and replies are logged by default. Set `logging.log_bodies: false` to log metadata only. `logging.max_body_chars` defaults to `16384`; longer values are replaced with a preview marked `truncated`. Logs rotate at `logging.max_file_bytes`, which defaults to 10 MiB, with up to `logging.max_files` archives, defaulting to 7. Archives are named `http.jsonl.1`, and so on. A single record is never split across files.
 
 ```bash
-tail -n 100 -F /data/pi-http/logs/http.jsonl
+tail -n 100 -F /data/pi-agent-api/logs/http.jsonl
 ```
 
-HTTP startup fails if the log directory cannot be created or the log file cannot be opened. Write failures during operation are reported to stderr with the time and path, while business requests can continue. Chat TTL controls chat cleanup, not log retention.
+HTTP startup fails if the log directory cannot be created or the log file cannot be opened. Write failures during operation are reported to stderr with the time and path, while business requests can continue. Chat TTL does not control retention of this global HTTP log.
+
+### Per-chat input and output
+
+Each chat also has `chat.storage_dir/<chat_id>/conversation.jsonl` (default `/data/pi-agent-api/chats/<chat_id>/conversation.jsonl`). Each executed turn appends one JSON line containing its complete JSON `input` and `output`, UTC completion `time`, `started_at`, `chat_id`, `request_id`, selected `model`, `status`, execution `duration_ms`, and attachment counts/sizes. Text line breaks are escaped inside JSON, so one turn always occupies one line. Simplified example:
+
+```jsonl
+{"event":"chat_turn","chat_id":"chat_example","request_id":"req_1","input":{"message":"Hello"},"output":{"reply":"Hello!"}}
+{"event":"chat_turn","chat_id":"chat_example","request_id":"req_2","input":{"chat_id":"chat_example","message":"Continue"},"output":{"reply":"Continuing our conversation."}}
+```
+
+Follow-up messages with the same `chat_id` append to the same file, including after a service restart. Idempotency replays do not append a duplicate turn. Executed turns that fail or are cancelled also record their error output; rejected requests and requests interrupted by a process crash can be investigated in the global HTTP log. New conversation files use permissions `0600`.
+
+Conversation input/output uses the same credential redaction and `logging.log_bodies` switch as the HTTP log. It stores complete bodies without `logging.max_body_chars` preview truncation and does not rotate into separate files. Attachments are represented only by counts and byte sizes. `logging.enabled: false` disables both logs; `logging.log_bodies: false` retains only metadata. Conversation files are deleted together with the chat directory when that chat expires; the global HTTP log keeps its independent rotation policy.
 
 ## Background operation and automatic restarts
 
@@ -130,9 +152,9 @@ Linux uses a systemd user service; macOS uses a launchd LaunchAgent. The launche
 Initialize and edit the configuration, and complete model setup and any required project trust authorization in the target Pi working directory before installing the service:
 
 ```bash
-SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
+SERVICE=/absolute/path/to/pi-agent-api/scripts/service.mjs
 node "$SERVICE" init
-# Edit /data/pi-http/config/pi-http.config.json before installing:
+# Edit /data/pi-agent-api/config/pi-agent-api.config.json before installing:
 node "$SERVICE" install --cwd /absolute/path/to/workspace --pi "$(command -v pi)"
 node "$SERVICE" start
 node "$SERVICE" status
@@ -142,21 +164,21 @@ node "$SERVICE" logs
 When using a custom main configuration file, pass the same path during installation and subsequent management:
 
 ```bash
-node "$SERVICE" install --http-config /absolute/path/to/pi-http.config.json \
+node "$SERVICE" install --http-config /absolute/path/to/pi-agent-api.config.json \
   --cwd /absolute/path/to/workspace --pi "$(command -v pi)"
-node "$SERVICE" start --http-config /absolute/path/to/pi-http.config.json
-node "$SERVICE" stop --http-config /absolute/path/to/pi-http.config.json
-node "$SERVICE" restart --http-config /absolute/path/to/pi-http.config.json
-node "$SERVICE" status --http-config /absolute/path/to/pi-http.config.json
-node "$SERVICE" logs --http-config /absolute/path/to/pi-http.config.json
-node "$SERVICE" uninstall --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" start --http-config /absolute/path/to/pi-agent-api.config.json
+node "$SERVICE" stop --http-config /absolute/path/to/pi-agent-api.config.json
+node "$SERVICE" restart --http-config /absolute/path/to/pi-agent-api.config.json
+node "$SERVICE" status --http-config /absolute/path/to/pi-agent-api.config.json
+node "$SERVICE" logs --http-config /absolute/path/to/pi-agent-api.config.json
+node "$SERVICE" uninstall --http-config /absolute/path/to/pi-agent-api.config.json
 ```
 
 `install` writes the service definition and enables startup at login, but does not immediately start Pi. `start` waits for the HTTP extension to confirm readiness. `stop` shuts down gracefully; `restart` stops gracefully and then starts again. `uninstall` disables automatic startup while preserving configuration, credentials, logs, and chat data. Before updating code or installation arguments, run `stop`, update, run `install`, and then `start`. Ordinary HTTP configuration changes only require `restart`.
 
 Background services do not read shell files such as `.zshrc` or `.bashrc`. Installation captures `PATH`, the HTTP key, and optional `PI_CODING_AGENT_DIR`, and reuses the generated environment file. Put extra provider environment variables in `environment.json`, or import a JSON object with string values using `install --env-file /absolute/path/to/variables.json`. An explicit environment file overrides the current shell, whose values override previously saved values. Imports copy values; later edits to the source file do not take effect automatically.
 
-`paths.config_dir` controls `service.json`, `environment.json`, and `status.json`. `logging.directory` controls HTTP logs and the macOS launcher log. Service definitions must remain in the locations required by the operating system: `~/.config/systemd/user/pi-http.service` on Linux, and `~/Library/LaunchAgents/dev.pi-http.plist` on macOS. Each user manages one service by default.
+`paths.config_dir` controls `service.json`, `environment.json`, and `status.json`. `logging.directory` controls HTTP logs and the macOS launcher log. Service definitions must remain in the locations required by the operating system: `~/.config/systemd/user/pi-agent-api.service` on Linux, and `~/Library/LaunchAgents/dev.pi-agent-api.plist` on macOS. Each user manages one service by default.
 
 Installation records absolute paths to Node, Pi, and the extension package. Reinstall the service definition after moving directories or changing runtime installation paths. Keep real configuration, databases, and attachments out of package caches or temporary directories that may be deleted during upgrades. Foreground and background Pi must not use the same listener port or database at the same time.
 
@@ -164,12 +186,12 @@ The default startup deadline is 60 seconds; adjust it with `install --startup-ti
 
 ### Linux
 
-Installation runs `systemctl --user daemon-reload` and `enable pi-http.service`. Failed services retry every 5 seconds, with at most 5 starts in 60 seconds. After fixing the problem, run `start` to clear the failure counter. systemd may show `active` before HTTP is ready; use the management command's `runtime.state: "ready"` as the readiness indicator.
+Installation runs `systemctl --user daemon-reload` and `enable pi-agent-api.service`. Failed services retry every 5 seconds, with at most 5 starts in 60 seconds. After fixing the problem, run `start` to clear the failure counter. systemd may show `active` before HTTP is ready; use the management command's `runtime.state: "ready"` as the readiness indicator.
 
 `logs` follows the HTTP log file. View timestamped launcher process logs with:
 
 ```bash
-journalctl --user -u pi-http.service -n 100 -f
+journalctl --user -u pi-agent-api.service -n 100 -f
 ```
 
 A working systemd user manager is required. The default service starts at login. To keep it running without a logged-in user or start it after system boot, have an administrator enable `loginctl enable-linger "$USER"` for the account. The installer does not convert it into a root system service.
@@ -182,9 +204,28 @@ Requires the current user's GUI login domain. On first start, `start` uses `laun
 
 ### Upgrading older deployments
 
-An existing `pi-http.config.json` in the working directory is still recognized. Before upgrading, set its `paths.data_dir` to the writable root you want to use. Existing explicit `chat.storage_dir` and `storage.database_path` values are preserved; files are not moved automatically.
+New deployments use `/data/pi-agent-api`, `pi-agent-api.config.json`, and `pi-agent-api.sqlite`. Configuration lookup order is: explicit `--http-config` → new working-directory filename → old working-directory filename → new default config → old `/data/pi-http/config/pi-http.config.json`. A config named `pi-http.config.json` retains the old default data root and database filename; explicit path overrides always take precedence. Existing files are not moved automatically.
 
-An older background service's existing `service.json` can still run directly. If no main configuration is specified or found, the management entry point tries the old user service configuration directory. Before migrating service configuration, stop the old service, copy the environment file you want to keep, and run `install` with the new main configuration. Then pass the new `--http-config` path to all management commands. Do not change paths while the old service is running.
+Before installing the renamed background service, remove the old systemd/launchd registration. The following commands preserve its configuration, credentials, attachments, database, and logs, and then reuse the old configuration with the new service name:
+
+```bash
+node "$SERVICE" status --legacy-service --http-config /data/pi-http/config/pi-http.config.json
+node "$SERVICE" uninstall --legacy-service --http-config /data/pi-http/config/pi-http.config.json
+node "$SERVICE" install --http-config /data/pi-http/config/pi-http.config.json --cwd /absolute/path/to/work
+node "$SERVICE" start --http-config /data/pi-http/config/pi-http.config.json
+```
+
+`--legacy-service` is supported only by `stop`, `status`, `logs`, and `uninstall`; it targets `pi-http.service` or `dev.pi-http`. Without an explicit config it looks for the old working-directory/default config and, for very early installations, the old user service configuration directory. Installation refuses to proceed while the old service definition exists, avoiding two registered jobs. Ordinary management commands target `pi-agent-api.service` or `dev.pi-agent-api`.
+
+To use a new configuration directory while retaining existing chats, stop the old service, copy the private environment file, and explicitly point `chat.storage_dir` and `storage.database_path` at their existing absolute locations in the new config before reinstalling. Existing Pi sessions and conversation history can contain absolute file paths, so keep those locations valid; moving historical attachments requires a separate data migration and is not automated. Do not run old and new services against the same data concurrently.
+
+## Package name and existing installations
+
+The package is named `pi-agent-api`. The service command is `pi-agent-api-service`; `pi-http-service` remains a compatibility alias for the same script and uses the new defaults. Use `--legacy-service` as described above when removing an older job. A source checkout can run `node "$SERVICE"` as shown above.
+
+The example configuration is `pi-agent-api.config.example.json`. `PI_HTTP_API_KEY`, `/http`, and `--http` / `--http-config` keep their existing meanings. Paths can be customized through configuration.
+
+The GitHub repository is still `wwyy456258/pi-http`. Clone it into a local `pi-agent-api` directory to match the source path examples; repository links continue to use the actual remote name.
 
 ## Packaging
 
@@ -198,13 +239,13 @@ The package contains TypeScript extension source, background service scripts, do
 pi install git:github.com/wwyy456258/pi-http
 ```
 
-The first npm release has not been published. See the [publishing guide (Chinese)](docs/publishing.md) for release configuration, account and package name checks, manual publication, and Pi catalog verification. To prepare a release locally without uploading:
+The npm package name is `pi-agent-api`. See the [publishing guide (Chinese)](docs/publishing.md) for release configuration, account and package name checks, manual publication, and Pi catalog verification. To prepare a release locally without uploading:
 
 ```bash
 npm run release:check
 ```
 
-This command runs type checking, tests, and a package preview. A future `npm publish` also runs these checks first. Git commits and pushes do not trigger an npm release.
+This command runs type checking, tests, and a package preview. `npm publish` also runs these checks first. Git commits and pushes do not trigger an npm release.
 
 ## API examples
 

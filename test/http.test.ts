@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -58,8 +58,8 @@ class TestBackend implements AgentBackend {
 }
 
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, override: object = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "pi-http-test-"));
-  await writeFile(join(directory, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: directory }, ...override }));
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-api-test-"));
+  await writeFile(join(directory, "pi-agent-api.config.json"), JSON.stringify({ paths: { data_dir: directory }, ...override }));
   const config = await loadConfig({ cwd: directory, env: { PI_HTTP_API_KEY: "test-service-key" } });
   const backend = new TestBackend(directory, config.model.default);
   let now = Date.now();
@@ -242,11 +242,14 @@ test("expiration removes only managed files and preserves 410 tombstones includi
   const f = await fixture(t, { chat: { ttl_seconds: 1 } });
   const response = await f.chat({ message: "initial" }, "expires-key");
   const id = response.json().chat_id;
+  const transcript = join(f.config.chat.storage_dir, id, "conversation.jsonl");
+  assert.ok((await readFile(transcript, "utf8")).includes('"message":"initial"'));
   const piSession = f.backend.calls[0]!.session;
   f.advance(2000);
   assert.equal((await f.chat({ chat_id: id, message: "late" })).statusCode, 410);
   await f.service.cleanup();
   await assert.rejects(readFile(join(f.config.chat.storage_dir, id, "files")));
+  await assert.rejects(readFile(transcript), { code: "ENOENT" });
   assert.ok((await readFile(piSession)).length);
   assert.equal((await f.chat({ message: "initial" }, "expires-key")).statusCode, 410);
   const row = f.service.store.requestByKey((await import("node:crypto")).createHash("sha256").update("expires-key").digest("hex"))!;
@@ -283,6 +286,11 @@ test("real socket disconnect cancels execution and the same key does not execute
   assert.equal(aborted.length, 1);
   assert.equal(aborted[0].status, 499);
   assert.equal(aborted[0].request_id, replay!.json().request_id);
+  const turns = (await readFile(join(f.config.chat.storage_dir, replay!.json().chat_id, "conversation.jsonl"), "utf8"))
+    .trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].input.message, "block");
+  assert.equal(turns[0].output.error.code, "request_cancelled");
 });
 
 test("shutdown cancels an active request after the configured grace period", async t => {
@@ -298,6 +306,8 @@ test("shutdown cancels an active request after the configured grace period", asy
 test("startup recovers interrupted requests and idempotency survives restart", async t => {
   const f = await fixture(t);
   const first = await f.chat({ message: "persisted" }, "persist-key");
+  const transcript = join(f.config.chat.storage_dir, first.json().chat_id, "conversation.jsonl");
+  const initialTranscript = await readFile(transcript, "utf8");
   f.service.store.submit({ requestId: "req-interrupted", chatId: first.json().chat_id, keyHash: "simulated-key-hash", fingerprint: "fingerprint", ttl: 86400, isNew: false, now: Date.now() });
   await f.close();
   const secondBackend = new TestBackend(f.directory);
@@ -307,16 +317,73 @@ test("startup recovers interrupted requests and idempotency survives restart", a
   assert.deepEqual(replay.json(), first.json());
   assert.equal(secondBackend.calls.length, 0);
   assert.equal(JSON.parse(second.service.store.requestByKey("simulated-key-hash")!.body!).error.code, "request_interrupted");
+  const continued = await second.app.inject({ method: "POST", url: "/v1/chat", headers: f.headers,
+    payload: { chat_id: first.json().chat_id, message: "after restart" } });
+  assert.equal(continued.statusCode, 200);
+  const continuedTranscript = await readFile(transcript, "utf8");
+  assert.ok(continuedTranscript.startsWith(initialTranscript));
+  const turns = continuedTranscript.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(turns.length, 2);
+  assert.equal(turns[1].input.message, "after restart");
+  assert.deepEqual(turns[1].output, continued.json());
   await second.close();
 });
 
+test("one JSONL per chat appends full input/output, attachment sizes and failures without replay duplicates", async t => {
+  const f = await fixture(t, { logging: { max_body_chars: 80 } });
+  const input = { message: `你好\n${"long text ".repeat(2500)}`, model: "test/other", ttl_seconds: 60 };
+  const first = await f.chat(input, "transcript-key");
+  assert.equal(first.statusCode, 200);
+  const id = first.json().chat_id;
+  const path = join(f.config.chat.storage_dir, id, "conversation.jsonl");
+  const initial = await readFile(path, "utf8");
+  const initialEntry = JSON.parse(initial);
+  assert.deepEqual(initialEntry.input, input);
+  assert.deepEqual(initialEntry.output, first.json());
+  assert.equal(initialEntry.model, "test/other");
+  assert.equal(initialEntry.status, 200);
+  assert.equal(initialEntry.chat_id, id);
+  assert.equal(initialEntry.request_id, first.json().request_id);
+  assert.match(initialEntry.time, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  assert.ok(Date.parse(initialEntry.time) >= Date.parse(initialEntry.started_at));
+  assert.ok(initialEntry.duration_ms >= 0);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  const binary = Buffer.from("ATTACHMENT_CONTENT_MUST_NOT_APPEAR_IN_CHAT_LOG");
+  const followup = { chat_id: id, message: "use the attachment if needed" };
+  const upload = form(followup, [{ name: "private-file.bin", data: binary }]);
+  const second = await f.app.inject({ method: "POST", url: "/v1/chat",
+    headers: { ...f.headers, "content-type": upload.contentType }, payload: upload.payload });
+  assert.equal(second.statusCode, 200);
+  const failed = await f.chat({ chat_id: id, message: "fail" }, "failed-transcript-key");
+  assert.equal(failed.statusCode, 502);
+  assert.deepEqual((await f.chat(input, "transcript-key")).json(), first.json());
+  assert.deepEqual((await f.chat({ chat_id: id, message: "fail" }, "failed-transcript-key")).json(), failed.json());
+  const raw = await readFile(path, "utf8");
+  assert.ok(raw.startsWith(initial));
+  const entries = raw.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(entries.length, 3);
+  assert.deepEqual(entries[1].input, followup);
+  assert.deepEqual(entries[1].output, second.json());
+  assert.deepEqual(entries[1].files, { count: 1, total_bytes: binary.length, sizes_bytes: [binary.length] });
+  assert.equal(entries[2].status, 502);
+  assert.deepEqual(entries[2].output, failed.json());
+  for (const excluded of [binary.toString(), "private-file.bin", f.backend.calls[1]!.files[0]!.path, "transcript-key"]) {
+    assert.ok(!raw.includes(excluded), excluded);
+  }
+  const independent = await f.chat({ message: "separate conversation" });
+  const other = await readFile(join(f.config.chat.storage_dir, independent.json().chat_id, "conversation.jsonl"), "utf8");
+  assert.equal(JSON.parse(other).input.message, "separate conversation");
+  assert.equal(await readFile(path, "utf8"), raw);
+});
+
 test("config paths, defaults, key requirement and explicit missing file", async t => {
-  const root = await mkdtemp(join(tmpdir(), "pi-http-config-"));
+  const root = await mkdtemp(join(tmpdir(), "pi-agent-api-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const env = { PI_HTTP_API_KEY: "test-service-key" };
-  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: root } }));
+  await writeFile(join(root, "pi-agent-api.config.json"), JSON.stringify({ paths: { data_dir: root } }));
   await assert.rejects(loadConfig({ cwd: root, env: {} }), /PI_HTTP_API_KEY/);
   assert.equal((await loadConfig({ cwd: root, env })).model.default, undefined);
+  assert.equal((await loadConfig({ cwd: root, env })).storage.database_path, join(root, "pi-agent-api.sqlite"));
   await assert.rejects(loadConfig({ cwd: root, env, path: "missing.json" }));
   await writeFile(join(root, "custom.json"), JSON.stringify({ pi: { cwd: "." }, chat: { storage_dir: "files" } }));
   const configured = await loadConfig({ cwd: "/", env, path: join(root, "custom.json") });
@@ -324,6 +391,19 @@ test("config paths, defaults, key requirement and explicit missing file", async 
   assert.equal(configured.chat.storage_dir, join(root, "files"));
   await writeFile(join(root, "custom.json"), JSON.stringify({ model: { default: "" } }));
   await assert.rejects(loadConfig({ cwd: root, env, path: "custom.json" }));
+});
+
+test("legacy configuration keeps the existing database and attachments after the package rename", async t => {
+  const root = await mkdtemp(join(tmpdir(), "pi-agent-api-legacy-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = { PI_HTTP_API_KEY: "test-service-key" };
+  const path = join(root, "pi-http.config.json");
+  await writeFile(path, JSON.stringify({ paths: { data_dir: root } }));
+  const legacy = await loadConfig({ cwd: root, env });
+  assert.equal(legacy.chat.storage_dir, join(root, "chats"));
+  assert.equal(legacy.storage.database_path, join(root, "pi-http.sqlite"));
+  await writeFile(path, JSON.stringify({ paths: { data_dir: root }, storage: { database_path: "existing.sqlite" } }));
+  assert.equal((await loadConfig({ cwd: root, env })).storage.database_path, join(root, "existing.sqlite"));
 });
 
 test("HTTP logs include timed input/output and file sizes without credentials or attachment contents", async t => {
@@ -356,12 +436,14 @@ test("upstream error details remain useful while HTTP and log credentials are re
     run: async () => { throw new ApiError(502, "upstream_error", "diagnostic: test-service-key Bearer upstream-secret https://example.invalid/?token=query-secret"); },
     dispose: async () => {},
   });
-  const response = await f.chat({ message: "fail safely" });
+  const response = await f.chat({ message: "fail safely: test-service-key Bearer request-secret" });
   assert.equal(response.statusCode, 502);
   assert.match(response.json().error.message, /diagnostic:/);
   await f.log.flush();
-  const combined = response.body + await readFile(f.log.path, "utf8");
-  for (const secret of ["test-service-key", "upstream-secret", "query-secret"]) assert.ok(!combined.includes(secret));
+  const transcript = await readFile(join(f.config.chat.storage_dir, response.json().chat_id, "conversation.jsonl"), "utf8");
+  const combined = response.body + await readFile(f.log.path, "utf8") + transcript;
+  for (const secret of ["test-service-key", "upstream-secret", "query-secret", "request-secret"]) assert.ok(!combined.includes(secret));
+  assert.deepEqual(JSON.parse(transcript).output, response.json());
 });
 
 test("logs rotate with bounded archives and body previews; body logging can be disabled", async t => {
@@ -377,16 +459,27 @@ test("logs rotate with bounded archives and body previews; body logging can be d
   assert.equal(response.input.truncated, true);
   assert.ok(response.input.preview.length <= 80);
   const metadata = await fixture(t, { logging: { log_bodies: false } });
-  await metadata.chat({ message: "BODY_NOT_LOGGED" });
+  const metadataResponse = await metadata.chat({ message: "BODY_NOT_LOGGED" });
   await metadata.log.flush();
   const text = await readFile(metadata.log.path, "utf8");
   assert.ok(!text.includes("BODY_NOT_LOGGED"));
   assert.ok(text.includes("response_sent"));
+  const metadataTranscript = await readFile(join(metadata.config.chat.storage_dir, metadataResponse.json().chat_id, "conversation.jsonl"), "utf8");
+  assert.ok(!metadataTranscript.includes("BODY_NOT_LOGGED"));
+  assert.equal(JSON.parse(metadataTranscript).input, undefined);
+  assert.equal(JSON.parse(metadataTranscript).output, undefined);
+});
+
+test("disabling logging also disables per-chat conversation files", async t => {
+  const f = await fixture(t, { logging: { enabled: false } });
+  const response = await f.chat({ message: "no transcript" });
+  assert.equal(response.statusCode, 200);
+  await assert.rejects(readFile(join(f.config.chat.storage_dir, response.json().chat_id, "conversation.jsonl")), { code: "ENOENT" });
 });
 
 test("initialized private environment works for foreground Pi without an exported key", async t => {
   const { initialize } = await import("../scripts/configuration.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "pi-http-config-env-"));
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-api-config-env-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const setup = await initialize({ dataDir: directory });
   const config = await loadConfig({ path: setup.configPath, env: {} });
@@ -399,7 +492,7 @@ test("initialized private environment works for foreground Pi without an exporte
 
 test("malformed private environment reports its path without quoting credentials", async t => {
   const { initialize } = await import("../scripts/configuration.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "pi-http-bad-env-"));
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-api-bad-env-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const setup = await initialize({ dataDir: directory });
   await writeFile(setup.environmentPath, '{"PI_HTTP_API_KEY": "private-broken-secret" trailing invalid JSON');

@@ -64,7 +64,7 @@ await writeFile(join(agentDir, "extensions", "confirm.ts"), `export default func
     if (event.prompt.includes("[confirm]")) await ctx.ui.confirm("Confirm", "Continue?");
   });
 }`);
-await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: join(root, "data") } }));
+await writeFile(join(root, "pi-agent-api.config.json"), JSON.stringify({ paths: { data_dir: join(root, "data") } }));
 const config = await loadConfig({ cwd: root, env: { PI_HTTP_API_KEY: "fake-service-key" } });
 const backend = await PiBackend.create(config);
 const server = await createApp(config, backend);
@@ -105,14 +105,14 @@ try {
   assert.ok(probeAddress && typeof probeAddress !== "string");
   const pluginPort = probeAddress.port;
   await new Promise<void>(resolve => portProbe.close(() => resolve()));
-  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: join(root, "extension-data") }, server: { port: pluginPort },
+  await writeFile(join(root, "pi-agent-api.config.json"), JSON.stringify({ paths: { data_dir: join(root, "extension-data") }, server: { port: pluginPort },
     chat: { storage_dir: "./extension-data/chats" }, storage: { database_path: "./extension-data/state.sqlite" } }));
   await promisify(execFile)(process.execPath, [join(getPackageDir(), "dist/bundle/cli.js"), "install", packageRoot], {
     cwd: root, env: process.env, timeout: 10000,
   });
   const installed = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8"));
   assert.ok(installed.packages.some((entry: string) => resolve(agentDir, entry) === resolve(packageRoot)));
-  const ownerServices = await createAgentSessionServices({ cwd: root, extensionFlagValues: new Map<string, string | boolean>([["http", true], ["http-config", join(root, "pi-http.config.json")]]) });
+  const ownerServices = await createAgentSessionServices({ cwd: root, extensionFlagValues: new Map<string, string | boolean>([["http", true], ["http-config", join(root, "pi-agent-api.config.json")]]) });
   assert.deepEqual(ownerServices.diagnostics, []);
   await ownerServices.modelRuntime.setRuntimeApiKey("local-test", "fake-host-runtime-key");
   const { session: owner } = await createAgentSessionFromServices({ services: ownerServices,
@@ -153,9 +153,9 @@ try {
     assert.equal(switched.default_model, "local-test/model-a");
     await owner.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
     await assert.rejects(fetch(`${pluginUrl}/v1/models`, { headers }));
-    const beforeInit = await readFile(join(root, "pi-http.config.json"), "utf8");
+    const beforeInit = await readFile(join(root, "pi-agent-api.config.json"), "utf8");
     await command.handler("init", owner.extensionRunner.createCommandContext());
-    assert.equal(await readFile(join(root, "pi-http.config.json"), "utf8"), beforeInit);
+    assert.equal(await readFile(join(root, "pi-agent-api.config.json"), "utf8"), beforeInit);
     await command.handler("config", owner.extensionRunner.createCommandContext());
     const logs = (await readFile(join(root, "extension-data/logs/http.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.ok(logs.some(entry => entry.event === "response_sent" && entry.output?.reply === "reply:model-b"));
@@ -184,7 +184,7 @@ try {
   await writeFile(serviceEnvironment, JSON.stringify({ PI_HTTP_API_KEY: "fake-service-key", PI_CODING_AGENT_DIR: agentDir,
     PATH: process.env.PATH ?? "", PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1" }));
   await writeFile(serviceConfig, JSON.stringify({ node: process.execPath, cwd: root,
-    pi: [process.execPath, join(getPackageDir(), "dist/bundle/cli.js")], httpConfig: join(root, "pi-http.config.json"),
+    pi: [process.execPath, join(getPackageDir(), "dist/bundle/cli.js")], httpConfig: join(root, "pi-agent-api.config.json"),
     environment: serviceEnvironment, status: serviceStatus, startupTimeout: 15, stopTimeout: 5 }));
   const launch = () => {
     const child = spawn(process.execPath, [join(packageRoot, "scripts/service.mjs"), "run", "--service-config", serviceConfig], {

@@ -1,5 +1,5 @@
 {
-  "name": "pi-http",
+  "name": "pi-agent-api",
   "version": "0.1.0",
   "type": "module",
   "description": "Pi extension for synchronous HTTP chat, file attachments, model selection, and systemd/launchd background services",
@@ -14,12 +14,12 @@
     "node": ">=22.19.0"
   },
   "pi": { "extensions": ["./src/extension.ts"] },
-  "bin": { "pi-http-service": "scripts/service.mjs" },
+  "bin": { "pi-agent-api-service": "scripts/service.mjs", "pi-http-service": "scripts/service.mjs" },
   "files": [
     "src",
     "scripts",
     "docs",
-    "pi-http.config.example.json",
+    "pi-agent-api.config.example.json",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"

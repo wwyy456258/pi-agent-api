@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import type { Config } from "./config.ts";
 import { ApiError, envelope, publicError } from "./errors.ts";
 import { Store } from "./store.ts";
+import type { HttpLog } from "./logging.ts";
 import type { RequestRow } from "./store.ts";
 import type { AgentBackend, Attachment, ChatInput, ChatResult, ModelInfo } from "./types.ts";
 
@@ -49,7 +50,7 @@ export class ChatService {
   private shutdownTask?: Promise<void>;
 
   constructor(readonly config: Config, readonly store: Store, readonly backend: AgentBackend,
-    private now: () => number = Date.now) {}
+    private log: HttpLog, private now: () => number = Date.now) {}
 
   async initialize(): Promise<void> {
     await mkdir(this.config.chat.storage_dir, { recursive: true, mode: 0o700 });
@@ -152,6 +153,8 @@ export class ChatService {
       return { status: context.replay.status!, body: JSON.parse(context.replay.body!) as unknown };
     }
     if (context.controller.signal.aborted) throw cancelled();
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
     const chatId = context.chatId!;
     const filesRoot = join(this.config.chat.storage_dir, chatId, "files");
     await mkdir(filesRoot, { recursive: true, mode: 0o700 });
@@ -185,6 +188,14 @@ export class ChatService {
       reply, expires_at: new Date(expiresAt).toISOString(),
     } satisfies ChatResult;
     this.store.finish(context.requestId, chatId, status, body, expiresAt);
+    await this.log.appendChat(chatId, {
+      request_id: context.requestId, started_at: startedAt, model: context.model!.id, status,
+      duration_ms: Math.round((performance.now() - started) * 1000) / 1000,
+      input: this.log.body(context.input, false),
+      files: { count: context.files.length, total_bytes: context.files.reduce((sum, file) => sum + file.size, 0),
+        sizes_bytes: context.files.map(file => file.size) },
+      output: this.log.body(body, false),
+    });
     return { status, body };
   }
 

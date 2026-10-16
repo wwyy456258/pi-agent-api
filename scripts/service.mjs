@@ -9,24 +9,26 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import lockfile from 'proper-lockfile';
-import { DEFAULT_DATA_DIR, ensureDirectory, initialize, readConfiguration, resolveDirectories } from './configuration.mjs';
+import { DEFAULT_DATA_DIR, LEGACY_DATA_DIR, ensureDirectory, initialize, readConfiguration, resolveDirectories } from './configuration.mjs';
 
 const exec = promisify(execFile);
 const script = fileURLToPath(import.meta.url);
 const packageRoot = dirname(dirname(script));
-const label = 'dev.pi-http';
-const unit = 'pi-http.service';
+const label = 'dev.pi-agent-api';
+const unit = 'pi-agent-api.service';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const exists = async path => { try { await access(path); return true; } catch { return false; } };
 
-export function servicePaths(platform = process.platform, home = homedir(), directories = {}) {
+export function servicePaths(platform = process.platform, home = homedir(), directories = {}, legacy = false) {
+  const serviceUnit = legacy ? 'pi-http.service' : unit;
+  const serviceLabel = legacy ? 'dev.pi-http' : label;
   if (!['linux', 'darwin'].includes(platform)) throw new Error('Only Linux (systemd) and macOS (launchd) are supported.');
-  const root = directories.configDir ?? join(DEFAULT_DATA_DIR, 'config');
-  const logDir = directories.logDir ?? join(DEFAULT_DATA_DIR, 'logs');
-  return { platform, root, config: join(root, 'service.json'), environment: join(root, 'environment.json'),
+  const root = directories.configDir ?? join(legacy ? LEGACY_DATA_DIR : DEFAULT_DATA_DIR, 'config');
+  const logDir = directories.logDir ?? join(legacy ? LEGACY_DATA_DIR : DEFAULT_DATA_DIR, 'logs');
+  return { platform, root, unit: serviceUnit, label: serviceLabel, config: join(root, 'service.json'), environment: join(root, 'environment.json'),
     status: join(root, 'status.json'), log: join(logDir, 'service.log'),
-    definition: platform === 'linux' ? join(home, '.config/systemd/user', unit) : join(home, 'Library/LaunchAgents', `${label}.plist`) };
+    definition: platform === 'linux' ? join(home, '.config/systemd/user', serviceUnit) : join(home, 'Library/LaunchAgents', `${serviceLabel}.plist`) };
 }
 
 export async function writePrivate(path, value) {
@@ -48,8 +50,8 @@ const domain = () => `gui/${process.getuid()}`;
 
 export function renderService(config, paths) {
   const args = [config.node, config.launcher, 'run', '--service-config', paths.config];
-  if (paths.platform === 'linux') return `[Unit]\nDescription=Pi HTTP extension\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nWorkingDirectory=${systemdArg(config.cwd, false)}\nExecStart=${args.map(arg => systemdArg(arg)).join(' ')}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=${config.stopTimeout + 5}\nKillMode=mixed\nUMask=0077\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n`;
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${label}</string>\n<key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array>\n<key>WorkingDirectory</key><string>${xml(config.cwd)}</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>5</integer>\n<key>ExitTimeOut</key><integer>${config.stopTimeout + 5}</integer>\n<key>ProcessType</key><string>Background</string>\n<key>AbandonProcessGroup</key><false/>\n<key>StandardOutPath</key><string>${xml(paths.log)}</string>\n<key>StandardErrorPath</key><string>${xml(paths.log)}</string>\n<key>Umask</key><integer>63</integer>\n</dict></plist>\n`;
+  if (paths.platform === 'linux') return `[Unit]\nDescription=pi-agent-api (Pi HTTP extension)\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\nType=simple\nWorkingDirectory=${systemdArg(config.cwd, false)}\nExecStart=${args.map(arg => systemdArg(arg)).join(' ')}\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=${config.stopTimeout + 5}\nKillMode=mixed\nUMask=0077\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${paths.label}</string>\n<key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array>\n<key>WorkingDirectory</key><string>${xml(config.cwd)}</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>5</integer>\n<key>ExitTimeOut</key><integer>${config.stopTimeout + 5}</integer>\n<key>ProcessType</key><string>Background</string>\n<key>AbandonProcessGroup</key><false/>\n<key>StandardOutPath</key><string>${xml(paths.log)}</string>\n<key>StandardErrorPath</key><string>${xml(paths.log)}</string>\n<key>Umask</key><integer>63</integer>\n</dict></plist>\n`;
 }
 
 export async function resolvePi(command, env = process.env) {
@@ -77,6 +79,8 @@ export async function install(options, paths, execute = exec) {
   const loadedConfig = await readConfiguration({ path: options.httpConfig, cwd: options.cwd });
   const http = loadedConfig.raw;
   paths ??= servicePaths(process.platform, homedir(), resolveDirectories(http, loadedConfig.configPath));
+  const previousDefinition = join(dirname(paths.definition), paths.platform === 'linux' ? 'pi-http.service' : 'dev.pi-http.plist');
+  if (await exists(previousDefinition)) throw new Error('Remove the legacy service before installing pi-agent-api: run pi-agent-api-service uninstall --legacy-service with its --http-config path. Configuration and data are preserved.');
   // Refuse replacing a running job: its configuration and stop timeout must stay consistent.
   if (await isLoaded(paths, execute)) throw new Error('Stop the service before installing or updating it.');
   const cwd = await realpath(resolve(options.cwd ?? process.cwd()));
@@ -109,16 +113,16 @@ export async function install(options, paths, execute = exec) {
   await writePrivate(paths.definition, renderService(config, paths));
   if (paths.platform === 'linux') {
     await execute('systemctl', ['--user', 'daemon-reload']);
-    await execute('systemctl', ['--user', 'enable', unit]);
+    await execute('systemctl', ['--user', 'enable', paths.unit]);
   }
   return config;
 }
 
 export async function isLoaded(paths, execute = exec) {
   try {
-    if (paths.platform === 'darwin') await execute('launchctl', ['print', `${domain()}/${label}`]);
+    if (paths.platform === 'darwin') await execute('launchctl', ['print', `${domain()}/${paths.label}`]);
     else {
-      const { stdout } = await execute('systemctl', ['--user', 'show', unit, '--property=ActiveState', '--value']);
+      const { stdout } = await execute('systemctl', ['--user', 'show', paths.unit, '--property=ActiveState', '--value']);
       return !['inactive', 'failed', ''].includes(stdout.trim());
     }
     return true;
@@ -131,8 +135,8 @@ export async function isLoaded(paths, execute = exec) {
 
 export async function manage(action, paths = servicePaths(), execute = exec) {
   if (action === 'stop' || action === 'restart' || action === 'uninstall') {
-    if (paths.platform === 'linux') await execute('systemctl', ['--user', 'stop', unit]);
-    else if (await isLoaded(paths, execute)) await execute('launchctl', ['bootout', `${domain()}/${label}`]);
+    if (paths.platform === 'linux') await execute('systemctl', ['--user', 'stop', paths.unit]);
+    else if (await isLoaded(paths, execute)) await execute('launchctl', ['bootout', `${domain()}/${paths.label}`]);
     // launchctl bootout may return before the job's graceful shutdown finishes.
     const config = await json(paths.config);
     const deadline = Date.now() + (config.stopTimeout + 7) * 1000;
@@ -144,7 +148,7 @@ export async function manage(action, paths = servicePaths(), execute = exec) {
     }
   }
   if (action === 'uninstall') {
-    if (paths.platform === 'linux') await execute('systemctl', ['--user', 'disable', unit]);
+    if (paths.platform === 'linux') await execute('systemctl', ['--user', 'disable', paths.unit]);
     await rm(paths.definition, { force: true });
     if (paths.platform === 'linux') await execute('systemctl', ['--user', 'daemon-reload']);
     // Keep credentials/configuration/logs so uninstall never removes user data.
@@ -153,10 +157,10 @@ export async function manage(action, paths = servicePaths(), execute = exec) {
   if (action === 'start' || action === 'restart') {
     const config = await json(paths.config);
     if (paths.platform === 'linux') {
-      await execute('systemctl', ['--user', 'reset-failed', unit]);
-      await execute('systemctl', ['--user', 'start', unit]);
+      await execute('systemctl', ['--user', 'reset-failed', paths.unit]);
+      await execute('systemctl', ['--user', 'start', paths.unit]);
     } else if (!(await isLoaded(paths, execute))) await execute('launchctl', ['bootstrap', domain(), paths.definition]);
-    else await execute('launchctl', ['kickstart', `${domain()}/${label}`]);
+    else await execute('launchctl', ['kickstart', `${domain()}/${paths.label}`]);
     const deadline = Date.now() + config.startupTimeout * 1000;
     while (Date.now() < deadline) {
       const state = await json(paths.status).catch(() => null);
@@ -181,7 +185,7 @@ export async function runService(configPath) {
   const log = message => {
     let value = String(message);
     for (const secret of secrets) value = value.replaceAll(secret, '[redacted]');
-    process.stderr.write(`${new Date().toISOString()} [pi-http-service] ${value}\n`);
+    process.stderr.write(`${new Date().toISOString()} [pi-agent-api-service] ${value}\n`);
   };
   // launchd reaps the job's process group on a wrapper crash. Keep Pi in that
   // group on macOS; systemd uses a cgroup, and direct runs get a separate group.
@@ -274,20 +278,26 @@ function parse(argv) {
   const names = { '--cwd': 'cwd', '--http-config': 'httpConfig', '--pi': 'pi', '--env-file': 'envFile',
     '--startup-timeout': 'startupTimeout', '--stop-timeout': 'stopTimeout', '--service-config': 'serviceConfig', '--data-dir': 'dataDir' };
   const options = {};
-  for (let index = 0; index < rest.length; index += 2) {
+  for (let index = 0; index < rest.length; index++) {
+    if (rest[index] === '--legacy-service') {
+      if (!['stop', 'status', 'logs', 'uninstall'].includes(action) || options.legacyService) throw new Error('--legacy-service is only accepted once by stop/status/logs/uninstall.');
+      options.legacyService = true;
+      continue;
+    }
     const name = names[rest[index]];
     if (!name || !rest[index + 1] || rest[index + 1].startsWith('--')) throw new Error(`Unknown option or missing value: ${rest[index]}`);
     const allowed = action === 'install' ? ['cwd', 'httpConfig', 'pi', 'envFile', 'startupTimeout', 'stopTimeout']
       : action === 'init' ? ['cwd', 'httpConfig', 'dataDir'] : action === 'run' ? ['serviceConfig'] : ['httpConfig'];
     if (!allowed.includes(name)) throw new Error('Options are only accepted by install/init; management accepts --http-config.');
     options[name] = rest[index + 1];
+    index++;
   }
   return { action, options };
 }
 export async function main(argv) {
   const { action, options } = parse(argv);
   if (!action || ['--help', '-h', 'help'].includes(action)) {
-    console.log(`Usage: pi-http-service <init|install|start|stop|restart|status|logs|uninstall>\n\ninit options:\n  --data-dir PATH        Data root (default: /data/pi-http)\n  --http-config PATH     Configuration to create; existing files are preserved\n\ninstall options:\n  --cwd PATH             Pi working directory (default: current directory)\n  --http-config PATH     HTTP configuration JSON (default: /data/pi-http/config/pi-http.config.json; legacy CWD file supported)\n  --pi PATH              Pi executable or CLI JavaScript file (default: pi on PATH)\n  --env-file PATH        JSON object of environment variables; copied to protected storage\n  --startup-timeout SEC  HTTP startup deadline (default: 60)\n  --stop-timeout SEC     Graceful stop deadline (default: max(45, HTTP grace + 10))\n\nLinux: per-user systemd service. macOS: per-user launchd LaunchAgent.\ninstall enables login startup but does not start the service immediately.\nSee README for API Key, credentials, logs, logout behavior and updates.`);
+    console.log(`Usage: pi-agent-api-service <init|install|start|stop|restart|status|logs|uninstall>\n\ninit options:\n  --data-dir PATH        Data root (default: /data/pi-agent-api)\n  --http-config PATH     Configuration to create; existing files are preserved\n\ninstall options:\n  --cwd PATH             Pi working directory (default: current directory)\n  --http-config PATH     HTTP configuration JSON (default: /data/pi-agent-api/config/pi-agent-api.config.json; legacy CWD file supported)\n  --pi PATH              Pi executable or CLI JavaScript file (default: pi on PATH)\n  --env-file PATH        JSON object of environment variables; copied to protected storage\n  --startup-timeout SEC  HTTP startup deadline (default: 60)\n  --stop-timeout SEC     Graceful stop deadline (default: max(45, HTTP grace + 10))\n\nmanagement options:\n  --legacy-service      Target the old pi-http job (stop/status/logs/uninstall only)\n\nLinux: per-user systemd service. macOS: per-user launchd LaunchAgent.\ninstall enables login startup but does not start the service immediately.\nSee README for API Key, credentials, logs, logout behavior and updates.`);
     return 0;
   }
   if (action === 'run') {
@@ -300,10 +310,17 @@ export async function main(argv) {
     console.log('Edit the HTTP configuration and private environment file, then install/start. Existing files were preserved.');
     return 0;
   }
-  const loaded = await readConfiguration({ path: options.httpConfig, cwd: options.cwd });
-  let paths = servicePaths(process.platform, homedir(), resolveDirectories(loaded.raw, loaded.configPath));
+  let loaded;
+  if (options.legacyService && !options.httpConfig) {
+    const cwdConfig = resolve(options.cwd ?? process.cwd(), 'pi-http.config.json');
+    const configPath = await exists(cwdConfig) ? cwdConfig : join(LEGACY_DATA_DIR, 'config/pi-http.config.json');
+    loaded = await exists(configPath) ? await readConfiguration({ path: configPath }) : { raw: {}, configPath };
+  } else loaded = await readConfiguration({ path: options.httpConfig, cwd: options.cwd });
+  const directories = resolveDirectories(loaded.raw, loaded.configPath);
+  const legacyDefaults = options.legacyService && !options.httpConfig && !(await exists(loaded.configPath));
+  let paths = servicePaths(process.platform, homedir(), legacyDefaults ? {} : directories, options.legacyService);
   // Existing installations remain manageable without moving or replacing their data.
-  if (!options.httpConfig && !(await exists(loaded.configPath))) {
+  if (legacyDefaults) {
     const oldRoot = process.platform === 'linux' ? join(homedir(), '.config/pi-http') : join(homedir(), 'Library/Application Support/pi-http');
     if (await exists(join(oldRoot, 'service.json'))) paths = { ...paths, root: oldRoot,
       config: join(oldRoot, 'service.json'), environment: join(oldRoot, 'environment.json'),
@@ -311,13 +328,13 @@ export async function main(argv) {
   }
   if (action === 'install') {
     await install(options, paths);
-    console.log(`Installed ${paths.definition}\nCredentials: ${paths.environment} (0600)\nRun pi-http-service start to start Pi.`);
+    console.log(`Installed ${paths.definition}\nCredentials: ${paths.environment} (0600)\nRun pi-agent-api-service start to start Pi.`);
     return 0;
   }
   if (action === 'logs') {
     const child = paths.platform === 'linux'
-      ? spawn('tail', ['-n', '100', '-F', join(resolveDirectories(loaded.raw, loaded.configPath).logDir, 'http.jsonl')], { stdio: 'inherit' })
-      : spawn('tail', ['-n', '100', '-F', join(resolveDirectories(loaded.raw, loaded.configPath).logDir, 'http.jsonl'), paths.log], { stdio: 'inherit' });
+      ? spawn('tail', ['-n', '100', '-F', join(legacyDefaults ? dirname(paths.log) : directories.logDir, 'http.jsonl')], { stdio: 'inherit' })
+      : spawn('tail', ['-n', '100', '-F', join(legacyDefaults ? dirname(paths.log) : directories.logDir, 'http.jsonl'), paths.log], { stdio: 'inherit' });
     return new Promise(resolve => { child.on('error', () => resolve(1)); child.on('exit', code => resolve(code ?? 1)); });
   }
   if (!['start', 'stop', 'restart', 'status', 'uninstall'].includes(action)) throw new Error(`Unknown command: ${action}`);
@@ -326,5 +343,5 @@ export async function main(argv) {
   return action === 'status' && (!result.loaded || result.runtime?.state !== 'ready') ? 1 : 0;
 }
 if (process.argv[1] && await realpath(resolve(process.argv[1])).catch(() => null) === script) {
-  main(process.argv.slice(2)).then(code => { process.exitCode = code; }, error => { console.error(`pi-http-service: ${error.message}`); process.exitCode = 1; });
+  main(process.argv.slice(2)).then(code => { process.exitCode = code; }, error => { console.error(`pi-agent-api-service: ${error.message}`); process.exitCode = 1; });
 }

@@ -1,5 +1,5 @@
 {
-  "paths": { "data_dir": "/data/pi-http" },
+  "paths": { "data_dir": "/data/pi-agent-api" },
   "server": { "host": "127.0.0.1", "port": 3000, "shutdown_grace_seconds": 30 },
   "chat": { "ttl_seconds": 86400, "cleanup_interval_seconds": 300 },
   "upload": { "max_file_bytes": 0, "max_request_bytes": 0, "max_files": 0 },

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/
+pi-agent-api.config.json
 pi-http.config.json
 .env
 *.tgz

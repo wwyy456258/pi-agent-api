@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 
 test("real Pi SDK and package loader verify chat, tools, /http lifecycle and inherited host credentials", { timeout: 45000 }, async t => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-http-sdk-"));
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-api-sdk-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const result = await promisify(execFile)(process.execPath,
     ["--import", "tsx", fileURLToPath(new URL("./fixtures/pi-check.ts", import.meta.url)), directory], {

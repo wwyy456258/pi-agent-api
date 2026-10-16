@@ -23,7 +23,7 @@ export async function createApp(config: Config, backend: AgentBackend, options: 
   let log: HttpLog;
   try { log = await HttpLog.open(config); }
   catch (error) { await store.close(); throw error; }
-  const service = new ChatService(config, store, backend, options.now);
+  const service = new ChatService(config, store, backend, log, options.now);
   try { await service.initialize(); } catch (error) { await store.close(); await backend.close(); await log.close(); throw error; }
   interface Audit { started: number; authenticated: boolean; input?: unknown; files: number[]; output?: unknown; done: boolean }
   const audits = new WeakMap<FastifyRequest, Audit>();

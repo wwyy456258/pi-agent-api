@@ -12,7 +12,7 @@ const exec = promisify(execFile);
 const launcher = fileURLToPath(new URL('../scripts/service.mjs', import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const temporary = async t => {
-  const root = await mkdtemp(join(tmpdir(), 'pi-http-service-'));
+  const root = await mkdtemp(join(tmpdir(), 'pi-agent-api-service-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 };
@@ -45,7 +45,7 @@ test('service installation generates private Linux/macOS definitions with correc
       assert.match(definition, /Restart=on-failure/);
       assert.match(definition, /WorkingDirectory=".*Pi space %% \$ & \\" work"/);
       assert.match(definition, /TimeoutStopSec=75/);
-      assert.ok(calls.some(call => call.join(' ') === 'systemctl --user enable pi-http.service'));
+      assert.ok(calls.some(call => call.join(' ') === 'systemctl --user enable pi-agent-api.service'));
     } else {
       assert.match(definition, /<key>SuccessfulExit<\/key><false\/>/);
       assert.match(definition, /&amp; &quot;/);
@@ -89,8 +89,42 @@ test('management selects user systemd/launchd commands, waits for readiness, and
     if (platform === 'darwin') {
       assert.ok(calls.some(call => call[1] === 'bootstrap' && call[2] === `gui/${process.getuid()}`));
       assert.ok(calls.some(call => call[1] === 'bootout'));
-    } else assert.ok(calls.some(call => call.join(' ') === 'systemctl --user reset-failed pi-http.service'));
+    } else assert.ok(calls.some(call => call.join(' ') === 'systemctl --user reset-failed pi-agent-api.service'));
   }
+});
+
+test('renamed service refuses duplicate installation and legacy uninstall targets only the old job', async t => {
+  const root = await temporary(t);
+  const configPath = join(root, 'pi-agent-api.config.json');
+  await writeFile(configPath, JSON.stringify({ paths: { data_dir: root } }));
+  for (const platform of ['linux', 'darwin']) {
+    const home = join(root, platform);
+    const directories = { configDir: join(home, 'config'), logDir: join(home, 'logs') };
+    const paths = servicePaths(platform, home, directories);
+    const legacy = servicePaths(platform, home, directories, true);
+    await mkdir(dirname(legacy.definition), { recursive: true });
+    await mkdir(legacy.root, { recursive: true });
+    await writeFile(legacy.definition, 'old definition');
+    await writeFile(paths.definition, 'new definition');
+    await writeFile(legacy.config, JSON.stringify({ stopTimeout: 1 }));
+    await writeFile(legacy.environment, 'private environment');
+    const calls = [];
+    const execute = async (program, args) => { calls.push([program, ...args]); return { stdout: 'active' }; };
+    await assert.rejects(install({ cwd: root, httpConfig: configPath }, paths, execute), /uninstall --legacy-service/);
+    assert.equal(calls.length, 0);
+    await manage('uninstall', legacy, execute);
+    await assert.rejects(readFile(legacy.definition));
+    assert.equal(await readFile(paths.definition, 'utf8'), 'new definition');
+    assert.equal(await readFile(legacy.environment, 'utf8'), 'private environment');
+    if (platform === 'linux') {
+      assert.ok(calls.some(call => call.join(' ') === 'systemctl --user disable pi-http.service'));
+      assert.ok(!calls.some(call => call.includes('pi-agent-api.service')));
+    } else {
+      assert.ok(calls.some(call => call.join(' ') === `launchctl bootout gui/${process.getuid()}/dev.pi-http`));
+      assert.ok(!calls.some(call => call.some(arg => arg.includes('dev.pi-agent-api'))));
+    }
+  }
+  await assert.rejects(exec(process.execPath, [launcher, 'install', '--legacy-service']), /only accepted once by stop\/status\/logs\/uninstall/);
 });
 
 async function launchFake(t, mode) {

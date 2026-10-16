@@ -1,6 +1,8 @@
 # 发布到 npm 与 Pi 包目录
 
-当前包名为 `pi-http`，准备的首个版本为 `0.1.0`，许可证为 MIT。项目已经配置发布元数据，但尚未执行 npm 发布。
+npm 包名为 `pi-agent-api`，计划的首个版本为 `0.1.0`，许可证为 MIT。项目已完成改名准备，尚未成功发布到 npm；正式发布须按下文单独执行。
+
+2026-10-16 查询 npm 官方 registry 返回 `E404`，未找到 `pi-agent-api` 公开包。这不预留名称，也不能保证最终通过相似名称和权限校验。GitHub 仓库仍为 `wwyy456258/pi-http`，元数据中的仓库、主页和 Issues 地址继续指向该实际仓库。
 
 Pi 包目录展示带 `pi-package` 关键词的 npm 包，发布后等待目录索引更新即可。包结构、关键词和宿主依赖规则见 [Pi 官方文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)，发布操作见 [npm 官方文档](https://docs.npmjs.com/cli/v11/commands/npm-publish/)。
 
@@ -10,6 +12,7 @@ Pi 包目录展示带 `pi-package` 关键词的 npm 包，发布后等待目录�
 - `repository`、`homepage`、`bugs` 指向本项目 GitHub 仓库。
 - `keywords` 保留 `pi-package`，扩展入口为 `src/extension.ts`。
 - `publishConfig` 指向公开 npm registry，并设置 `access: public`。
+- 后台管理入口为 `pi-agent-api-service`，保留 `pi-http-service` 兼容别名；新目录、配置与数据库文件名、服务标识以及旧部署迁移说明见中英文 README。
 - `files` 限定源码、服务脚本、文档、示例配置和许可证；不分发 SDK、开发依赖、真实配置、环境文件、日志、数据库或聊天数据。
 - Pi SDK 保留为宿主提供的 `peerDependency`，开发测试版本为 `1.3.0`。
 
@@ -32,7 +35,7 @@ npm run release:check
 npm pack --ignore-scripts
 ```
 
-它会生成 `pi-http-0.1.0.tgz`；实际文件名随包名和版本变化。Pi 直接加载包中的 TypeScript 源码，因此打包不依赖 `dist/`，也不需要运行构建脚本。
+它会生成 `pi-agent-api-0.1.0.tgz`；实际文件名随包名和版本变化。Pi 直接加载包中的 TypeScript 源码，因此打包不依赖 `dist/`，也不需要运行构建脚本。
 
 ## 确认发布账号和包名
 
@@ -41,10 +44,10 @@ npm pack --ignore-scripts
 ```bash
 npm login --registry=https://registry.npmjs.org/
 npm whoami --registry=https://registry.npmjs.org/
-npm view pi-http name version --registry=https://registry.npmjs.org/
+npm view pi-agent-api name version --registry=https://registry.npmjs.org/
 ```
 
-`npm view` 返回 `404` 只说明未找到对应公开包，并不预留包名；最终还要通过 npm 的命名和权限校验。如果包名被其他人占用，可使用自己的 npm 用户或组织作用域，例如 `@your-npm-user/pi-http`，将示例中的用户名替换为实际账号。
+`npm view` 返回 `404` 只说明未找到对应公开包，并不预留包名；最终还要通过 npm 的命名和权限校验。如果包名被其他人占用，可使用自己的 npm 用户或组织作用域，例如 `@your-npm-user/pi-agent-api`，将示例中的用户名替换为实际账号。
 
 更换包名需要同步 `package.json`、`package-lock.json` 的根包信息，以及安装说明；也需要重新执行 `release:check`。不要直接使用 GitHub 用户名推定 npm 账号或作用域权限。
 
@@ -63,10 +66,10 @@ npm publish --access public --registry=https://registry.npmjs.org/
 ## 发布后验证
 
 ```bash
-npm view pi-http@0.1.0 version dist.tarball --registry=https://registry.npmjs.org/
-pi install npm:pi-http@0.1.0
+npm view pi-agent-api@0.1.0 version dist.tarball --registry=https://registry.npmjs.org/
+pi install npm:pi-agent-api@0.1.0
 ```
 
-如果改用了作用域包名，替换以上命令中的 `pi-http`。在新的测试工作目录中启动 Pi，再执行 `/http init <可写的测试数据目录>`、`/http start`，验证模型列表和聊天接口。
+在新的测试工作目录中启动 Pi，再执行 `/http init <可写的测试数据目录>`、`/http start`，验证模型列表和聊天接口。
 
 最后到 [Pi 包目录](https://pi.dev/packages) 搜索完整包名。目录展示有索引延迟，GitHub 代码推送本身不等于 npm 发布或目录收录。
