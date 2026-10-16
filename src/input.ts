@@ -1,6 +1,6 @@
-import { validTtl } from "./config.js";
-import { invalid } from "./errors.js";
-import type { ChatInput } from "./types.js";
+import { validTtl } from "./config.ts";
+import { invalid } from "./errors.ts";
+import type { ChatInput } from "./types.ts";
 
 export function parseInput(value: unknown): ChatInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid("The request must be an object.");

@@ -5,11 +5,11 @@ import { basename, dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { Config } from "./config.js";
-import { ApiError, envelope, publicError } from "./errors.js";
-import { Store } from "./store.js";
-import type { RequestRow } from "./store.js";
-import type { AgentBackend, Attachment, ChatInput, ChatResult, ModelInfo } from "./types.js";
+import type { Config } from "./config.ts";
+import { ApiError, envelope, publicError } from "./errors.ts";
+import { Store } from "./store.ts";
+import type { RequestRow } from "./store.ts";
+import type { AgentBackend, Attachment, ChatInput, ChatResult, ModelInfo } from "./types.ts";
 
 export interface Context {
   requestId: string;

@@ -3,13 +3,13 @@ import type { Readable } from "node:stream";
 import Fastify from "fastify";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import multipart from "@fastify/multipart";
-import { ChatService } from "./chat-service.js";
-import type { Context } from "./chat-service.js";
-import type { Config } from "./config.js";
-import { ApiError, envelope, invalid, publicError } from "./errors.js";
-import { parseInput } from "./input.js";
-import { Store } from "./store.js";
-import type { AgentBackend } from "./types.js";
+import { ChatService } from "./chat-service.ts";
+import type { Context } from "./chat-service.ts";
+import type { Config } from "./config.ts";
+import { ApiError, envelope, invalid, publicError } from "./errors.ts";
+import { parseInput } from "./input.ts";
+import { Store } from "./store.ts";
+import type { AgentBackend } from "./types.ts";
 
 export async function createApp(config: Config, backend: AgentBackend, options: { now?: () => number } = {}): Promise<{
   app: FastifyInstance; service: ChatService; close: () => Promise<void>;

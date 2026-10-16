@@ -2,7 +2,7 @@ import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import lockfile from "proper-lockfile";
-import { ApiError, envelope } from "./errors.js";
+import { ApiError, envelope } from "./errors.ts";
 
 export interface ChatRow {
   id: string;

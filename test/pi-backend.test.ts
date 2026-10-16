@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 
-test("real Pi SDK loads defaults, resumes history, runs tools and rejects terminal interactions", { timeout: 45000 }, async t => {
+test("real Pi SDK and package loader verify chat, tools, /http lifecycle and inherited host credentials", { timeout: 45000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), "pi-http-sdk-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const result = await promisify(execFile)(process.execPath,

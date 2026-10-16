@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { createAgentSessionFromServices, createAgentSessionServices, getPackageDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { PiBackend } from "../../src/pi-backend.js";
 
 const root = process.argv[2]!;
 const agentDir = process.env.PI_CODING_AGENT_DIR!;
-const requests: { model: string; messages: { role: string; content: unknown }[] }[] = [];
+const requests: { model: string; messages: { role: string; content: unknown }[]; tools?: { function: { name: string } }[] }[] = [];
+const authHeaders: (string | undefined)[] = [];
 const toolFile = join(root, "reference.txt");
 await writeFile(toolFile, "local-tool-evidence");
 const provider = createServer(async (request, response) => {
@@ -18,6 +23,7 @@ const provider = createServer(async (request, response) => {
     for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw);
     requests.push(body);
+    authHeaders.push(request.headers.authorization);
     const user = body.messages.filter((message: { role: string }) => message.role === "user").at(-1);
     const toolCall = JSON.stringify(user?.content).includes("[tool]") && body.messages.at(-1)?.role !== "tool";
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -79,5 +85,69 @@ try {
   assert.equal(interaction.json().error.code, "interaction_required");
   assert.equal(requests.length, before);
   assert.ok((await readFile(server.service.store.chat(id)!.session_file!, "utf8")).includes("first turn"));
+
+  // Discover this project as a real Pi package, through Pi's loader rather than importing its factory directly.
+  const packageRoot = process.env.PI_HTTP_TEST_PACKAGE ?? fileURLToPath(new URL("../../", import.meta.url));
+  const portProbe = createServer();
+  portProbe.listen(0, "127.0.0.1");
+  await once(portProbe, "listening");
+  const probeAddress = portProbe.address();
+  assert.ok(probeAddress && typeof probeAddress !== "string");
+  const pluginPort = probeAddress.port;
+  await new Promise<void>(resolve => portProbe.close(() => resolve()));
+  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ server: { port: pluginPort },
+    chat: { storage_dir: "./extension-data/chats" }, storage: { database_path: "./extension-data/state.sqlite" } }));
+  await promisify(execFile)(process.execPath, [join(getPackageDir(), "dist/bundle/cli.js"), "install", packageRoot], {
+    cwd: root, env: process.env, timeout: 10000,
+  });
+  const installed = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8"));
+  assert.ok(installed.packages.some((entry: string) => resolve(agentDir, entry) === resolve(packageRoot)));
+  const ownerServices = await createAgentSessionServices({ cwd: root, extensionFlagValues: new Map([["http", true]]) });
+  assert.deepEqual(ownerServices.diagnostics, []);
+  await ownerServices.modelRuntime.setRuntimeApiKey("local-test", "fake-host-runtime-key");
+  const { session: owner } = await createAgentSessionFromServices({ services: ownerServices,
+    sessionManager: SessionManager.inMemory(root), model: ownerServices.modelRuntime.getModel("local-test", "model-b"), tools: ["read"] });
+  const originalKey = process.env.PI_HTTP_API_KEY;
+  process.env.PI_HTTP_API_KEY = "fake-service-key";
+  let ownerError: string | undefined;
+  try {
+    await owner.bindExtensions({ mode: "print", onError: error => { ownerError = error.error; } });
+    assert.equal(ownerError, undefined);
+    const pluginUrl = `http://127.0.0.1:${pluginPort}`;
+    const headers = { authorization: "Bearer fake-service-key", "content-type": "application/json" };
+    const list = await fetch(`${pluginUrl}/v1/models`, { headers }).then(response => response.json()) as { default_model: string };
+    assert.equal(list.default_model, "local-test/model-b");
+    const result = await fetch(`${pluginUrl}/v1/chat`, { method: "POST", headers, body: JSON.stringify({ message: "from Pi extension" }) });
+    assert.equal(result.status, 200, await result.clone().text());
+    const body = await result.json() as { reply: string };
+    assert.equal(body.reply, "reply:model-b");
+    assert.deepEqual(requests.at(-1)!.tools?.map(tool => tool.function.name), ["read"]);
+    assert.equal(authHeaders.at(-1), "Bearer fake-host-runtime-key");
+    assert.equal(owner.messages.length, 0, "HTTP chats must not append to the user's interactive Pi conversation");
+    const command = owner.extensionRunner.getCommand("http");
+    assert.ok(command, "package must expose /http");
+    await command.handler("start", owner.extensionRunner.createCommandContext());
+    assert.equal((await fetch(`${pluginUrl}/v1/models`, { headers })).status, 200);
+    await command.handler("stop", owner.extensionRunner.createCommandContext());
+    await assert.rejects(fetch(`${pluginUrl}/v1/models`, { headers }));
+    delete process.env.PI_HTTP_API_KEY;
+    await command.handler("start", owner.extensionRunner.createCommandContext());
+    await assert.rejects(fetch(`${pluginUrl}/v1/models`, { headers }));
+    assert.equal(ownerError, undefined, "missing HTTP credentials must not break Pi itself");
+    process.env.PI_HTTP_API_KEY = "fake-service-key";
+    await command.handler("start", owner.extensionRunner.createCommandContext());
+    assert.equal(ownerError, undefined);
+    assert.equal((await fetch(`${pluginUrl}/v1/models`, { headers })).status, 200);
+    await owner.setModel(ownerServices.modelRuntime.getModel("local-test", "model-a")!);
+    const switched = await fetch(`${pluginUrl}/v1/models`, { headers }).then(response => response.json()) as { default_model: string };
+    assert.equal(switched.default_model, "local-test/model-a");
+    await owner.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
+    await assert.rejects(fetch(`${pluginUrl}/v1/models`, { headers }));
+  } finally {
+    await owner.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    owner.dispose();
+    if (originalKey === undefined) delete process.env.PI_HTTP_API_KEY;
+    else process.env.PI_HTTP_API_KEY = originalKey;
+  }
   process.stdout.write("Pi SDK integration passed\n");
 } finally { await server.close(); provider.closeAllConnections(); await new Promise<void>(resolve => provider.close(() => resolve())); }
