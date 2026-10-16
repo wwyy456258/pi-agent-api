@@ -27,7 +27,7 @@ export class Store {
   private constructor(private db: DatabaseSync, private release: () => Promise<void>) {}
 
   static async open(path: string): Promise<Store> {
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await (await open(path, "a", 0o600)).close();
     const release = await lockfile.lock(path, {
       stale: 10000, update: 2000,

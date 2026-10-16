@@ -19,9 +19,9 @@ WebUI、Webhook、定时任务、工作流和 Profile 不属于首版范围。
 
 ## Pi 扩展安装与生命周期
 
-`package.json` 通过 `pi.extensions` 声明 `src/extension.ts`。交付物是包含源码的 Pi Package，使用 `pi install <本地目录或 Git 来源>` 安装，无需独立 HTTP 命令或后台子进程。Pi SDK 由宿主提供，放在 `peerDependencies`；开发与验证版本放在 `devDependencies`，不作为运行依赖打入扩展包。
+`package.json` 通过 `pi.extensions` 声明 `src/extension.ts`。交付物是包含源码的 Pi Package，使用 `pi install <本地目录或 Git 来源>` 安装，HTTP 由 Pi 扩展实现；可选后台启动器交由 systemd 或 launchd 管理真实 Pi CLI。Pi SDK 由宿主提供，放在 `peerDependencies`；开发与验证版本放在 `devDependencies`，不作为运行依赖打入扩展包。
 
-扩展提供 `/http start`、`/http stop` 和 `/http status`。默认加载时只注册命令；使用 Pi 参数 `--http` 可在会话启动时自动打开监听，`--http-config <path>` 指定 HTTP 配置文件。
+扩展提供 `/http init [data-dir]`、`/http config`、`/http start`、`/http stop` 和 `/http status`。默认加载时只注册命令；使用 Pi 参数 `--http` 可在会话启动时自动打开监听，`--http-config <path>` 指定 HTTP 配置文件。
 
 监听与宿主 Pi 生命周期绑定，退出、重载和切换前台会话时均先关闭监听、停止内部请求，再释放 HTTP 资源。带 `--http` 时，新会话或重载完成后重新启动监听；手动启动模式需再次执行 `/http start`。启动操作串行化，重复启动不重复占用端口，停止操作可重复执行。
 
@@ -45,7 +45,7 @@ openssl rand -hex 32
 export PI_HTTP_API_KEY='<生成的密钥>'
 ```
 
-API Key 不写入业务配置文件。环境变量缺失或为空时，HTTP 监听拒绝启动，Pi 本身仍可继续使用；生成的真实密钥不写入项目文档或日志。
+API Key 不写入业务配置文件。初始化在 `paths.config_dir/environment.json` 生成 HTTP Key，扩展优先读取进程环境、其次读取该文件；两者均缺失或值为空时，HTTP 监听拒绝启动，Pi 本身仍可继续使用；生成的真实密钥不写入项目文档或日志。
 
 ### 请求与更换
 
@@ -200,7 +200,7 @@ files   = 截图.png
 目录结构示意：
 
 ```text
-data/chats/chat_abc/
+/data/pi-http/chats/chat_abc/
   files/
     <生成的文件ID>/
       报表.xlsx
@@ -337,9 +337,9 @@ Idempotency-Key: <调用方生成的唯一值>
 
 ## 配置与启动
 
-默认读取宿主 Pi 工作目录下的 `pi-http.config.json`，支持 Pi 扩展参数 `--http-config <path>` 指定其他文件。默认文件不存在时使用内置默认值；显式指定的配置文件缺失、JSON 无法解析或参数无效时拒绝启动 HTTP 监听，并向 Pi 报告错误。
+主配置查找顺序为显式 `--http-config <path>`、工作目录已有 `pi-http.config.json`、`/data/pi-http/config/pi-http.config.json`。默认文件不存在时使用内置默认值；显式指定的配置文件缺失、JSON 无法解析或参数无效时拒绝启动 HTTP 监听，并向 Pi 报告错误。
 
-API Key 只从 `PI_HTTP_API_KEY` 环境变量读取，不属于下方 JSON 配置。业务配置示例：
+API Key 优先从 `PI_HTTP_API_KEY` 环境变量读取，未设置时读取 `paths.config_dir/environment.json`，不属于下方业务 JSON 配置。业务配置示例：
 
 ```json
 {
@@ -355,12 +355,12 @@ API Key 只从 `PI_HTTP_API_KEY` 环境变量读取，不属于下方 JSON 配�
     "default": "provider-a/model-a"
   },
   "chat": {
-    "storage_dir": "./data/chats",
+    "storage_dir": "/data/pi-http/chats",
     "ttl_seconds": 86400,
     "cleanup_interval_seconds": 300
   },
   "storage": {
-    "database_path": "./data/pi-http.sqlite"
+    "database_path": "/data/pi-http/pi-http.sqlite"
   },
   "upload": {
     "max_file_bytes": 0,
@@ -376,16 +376,29 @@ API Key 只从 `PI_HTTP_API_KEY` 环境变量读取，不属于下方 JSON 配�
 | `server.shutdown_grace_seconds` | 正常退出时等待 30 秒，再请求取消 |
 | `pi.cwd` | 使用宿主 Pi 当前工作目录 |
 | `model.default` | 使用宿主 Pi 的默认模型选择 |
-| `chat.storage_dir` | `./data/chats` |
+| `paths.data_dir` | `/data/pi-http` |
+| `paths.config_dir` | `<data_dir>/config` |
+| `logging.directory` | `<data_dir>/logs` |
+| `chat.storage_dir` | `<data_dir>/chats` |
 | `chat.ttl_seconds` | `86400`，默认空闲保留 24 小时 |
 | `chat.cleanup_interval_seconds` | `300`，默认每 5 分钟扫描 |
-| `storage.database_path` | `./data/pi-http.sqlite` |
+| `storage.database_path` | `<data_dir>/pi-http.sqlite` |
 | `upload.max_file_bytes` | `0`，不限制单文件大小 |
 | `upload.max_request_bytes` | `0`，不限制请求总大小 |
 | `upload.max_files` | `0`，不限制文件数量 |
 
-所有相对路径均相对于配置文件所在目录解析。未读取配置文件时，相对于宿主 Pi 工作目录解析；示例显式写出的 `pi.cwd: "."` 因此表示配置文件所在目录，省略该字段则使用宿主 Pi 当前工作目录。
+所有相对路径均相对于配置文件所在目录解析。默认路径使用绝对的 `/data/pi-http` 数据根目录；示例显式写出的 `pi.cwd: "."` 因此表示配置文件所在目录，省略该字段则使用宿主 Pi 当前工作目录。
 
 时间、数量和字节数参数须为有效整数：聊天保留时间与清理间隔必须大于零，上传限制和退出宽限时间允许为零；模型字段配置为空字符串不能视为省略。存储目录或数据库无法使用时拒绝启动。
 
-配置文件修改后通过 `/http stop`、`/http start` 重新读取，首版不做热更新。API Key 来自 Pi 进程环境变量，更换启动环境中的密钥需要重新启动 Pi。
+配置文件修改后通过 `/http stop`、`/http start` 重新读取，首版不做热更新。进程环境中的 API Key 需要重启 Pi 才能更换；前台使用环境文件时重新启停 HTTP 即可，后台使用环境文件时重启后台服务。
+
+## 初始化、路径与接口日志
+
+安装只注册扩展。首次使用前执行 `/http init [data-dir]` 或 `pi-http-service init --data-dir <path>`，自动创建目录、主配置和私有环境文件，已有文件不覆盖。默认主配置为 `/data/pi-http/config/pi-http.config.json`。显式 `--http-config` 优先，其次兼容工作目录已有配置，最后使用默认路径。
+
+`paths.data_dir` 控制默认数据根目录，`paths.config_dir` 控制环境与服务配置目录，`logging.directory` 控制日志目录；附件和 SQLite 路径仍可分别覆盖。显式相对路径以主配置文件目录为基准。主配置自身的位置由启动参数决定。目录创建失败报告具体路径，不静默回退或自动提升权限。
+
+默认启用 `http.jsonl` 接口日志，记录 UTC 时间、请求 ID、方法、路径、来源、输入输出、状态和耗时；文件仅记录数量和字节数，不记录文件名或内容。鉴权失败不记录业务输入，不记录请求头和查询参数。错误详情和日志中的已知凭据脱敏。客户端断开记录 `request_aborted`（499）。
+
+`logging.enabled` 默认 true，`log_bodies` 默认 true，`max_body_chars` 默认 16384。日志超过 `max_file_bytes`（默认 10 MiB）按完整记录轮转，保留 `max_files`（默认 7）个归档。聊天 TTL 不影响日志保留。初始化、前后台启动、管理命令及迁移细节见 README。

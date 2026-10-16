@@ -13,156 +13,174 @@ HTTP 接入沿用直接运行 Pi 的权限，不额外限制工具、文件访�
 
 接口契约、API Key 配置、文件存储、会话清理和异常处理规则见 [项目设计](docs/design.md)。扩展由 Pi 加载，HTTP 聊天使用各自的内部 Pi session，不写入前台交互会话。
 
-## 安装与启动
+## 安装后什么时候配置
 
-需要 Node.js 22.19 或更新版本，并已安装 Pi。当前以 Pi 1.3.0 开发和验证。先在 Pi 中配置好模型和供应商凭据；扩展沿用宿主 Pi 的模型与凭据，HTTP API Key 只用于调用鉴权。
-
-开发目录本地安装：
+需要 Node.js 22.19 或更新版本，并已安装 Pi，当前以 Pi 1.3.0 验证。先在 Pi 中配置模型和供应商凭据。
 
 ```bash
 npm ci --ignore-scripts
-pi install /Users/wangyi/workspace/code/pi-http
+pi install /absolute/path/to/pi-http
 ```
 
-Pi 按 `package.json` 中的 `pi.extensions` 加载 `src/extension.ts`，无需先构建 JavaScript。Pi SDK 是宿主提供的 peer dependency；本地开发时安装的 SDK 只用于类型检查与测试，不作为扩展运行依赖随包分发。
+**安装只负责让 Pi 发现扩展，不会启动 HTTP 或自动写入机器配置。第一次启动 HTTP 前执行初始化，编辑配置，再启动。** 后续升级保留现有配置。
 
-用 `openssl rand -hex 32` 生成 HTTP API Key，在启动 Pi 前设置环境变量：
-
-```bash
-export PI_HTTP_API_KEY='<生成的密钥>'
-pi
-```
-
-在 Pi 中执行：
+前台 Pi 中可以直接操作：
 
 ```text
+/http init
+/http config
 /http start
 /http status
 /http stop
 ```
 
-扩展默认只注册命令。需要在 Pi 启动时自动打开 HTTP 监听，可使用：
+`/http init` 默认在 `/data/pi-http` 创建配置、环境文件和数据目录，并生成 HTTP API Key（已导出的 Key 会被沿用）；不会覆盖已有配置或密钥。编辑下面的主配置文件后执行 `/http start`。
 
-```bash
-pi --http
+| 用途 | 默认位置 |
+| --- | --- |
+| HTTP 主配置 | `/data/pi-http/config/pi-http.config.json` |
+| HTTP Key、后台环境变量 | `/data/pi-http/config/environment.json` |
+| 后台服务参数、状态 | `/data/pi-http/config/service.json`、`status.json` |
+| 聊天附件 | `/data/pi-http/chats/` |
+| 状态数据库 | `/data/pi-http/pi-http.sqlite` |
+| HTTP 接口日志 | `/data/pi-http/logs/http.jsonl` |
+| macOS 后台启动器日志 | `/data/pi-http/logs/service.log` |
+
+目录不存在时自动递归创建，创建目录权限为 `0700`，配置、密钥、日志文件为 `0600`。当前用户无权创建 `/data/pi-http` 时会提示具体失败路径；可以先让管理员创建并授权该目录，或使用当前用户可写的位置：
+
+```text
+/http init /absolute/writable/path/pi-http
 ```
 
-默认监听 `http://127.0.0.1:3000`。没有请求级或扩展配置的默认模型时，沿用宿主 Pi 当前选择的模型；宿主切换模型后，后续 HTTP 请求也会使用新的默认选择。聊天默认保留至最后一次执行结束后的 24 小时。
+此命令会打印实际配置及环境文件路径，不打印密钥。当前 Pi 随后的 `/http start` 使用该配置；下次启动 Pi 时使用打印出的 `--http-config` 路径。
 
-需要调整配置时，在 Pi 工作目录下将 `pi-http.config.example.json` 复制为 `pi-http.config.json`，也可通过扩展参数显式指定：
+也可在终端初始化，无需先进入 Pi：
+
+```bash
+SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
+node "$SERVICE" init
+# 自定义数据根目录：
+node "$SERVICE" init --data-dir /absolute/writable/path/pi-http
+# 指定主配置文件的位置：
+node "$SERVICE" init --data-dir /absolute/writable/path/pi-http \
+  --http-config /absolute/path/to/pi-http.config.json
+```
+
+### 配置目录和模型
+
+配置示例见 `pi-http.config.example.json`。只修改 `paths.data_dir`，其余未显式覆盖的路径会随它改变；以下字段可以单独覆盖目录或文件路径：
+
+| 配置字段 | 未配置时的值 |
+| --- | --- |
+| `paths.data_dir` | `/data/pi-http` |
+| `paths.config_dir` | `<data_dir>/config`，保存环境、后台服务配置和状态 |
+| `logging.directory` | `<data_dir>/logs` |
+| `chat.storage_dir` | `<data_dir>/chats` |
+| `storage.database_path` | `<data_dir>/pi-http.sqlite` |
+
+显式配置的相对路径以主配置文件所在目录为基准。主配置文件自身的位置由 `--http-config` 指定，无法通过文件里面的 `paths.config_dir` 移动自己。修改路径不会迁移旧数据库、附件或环境文件，需要部署者迁移或继续显式指定原路径。
+
+主配置查找顺序：`--http-config <path>` → Pi 工作目录中已有的 `pi-http.config.json`（兼容旧部署）→ `/data/pi-http/config/pi-http.config.json`。`/http config` 可显示当前读取的配置及解析后的目录，不显示密钥。
 
 ```bash
 pi --http --http-config /absolute/path/to/pi-http.config.json
 ```
 
-例如，要设置扩展默认模型，在配置文件中增加 `"model": { "default": "供应商/模型ID" }`；可用 ID 通过模型列表接口获取。优先级为请求 `model`、配置 `model.default`、宿主 Pi 的默认选择。
+默认监听 `127.0.0.1:3000`。局域网接入需要把 `server.host` 改为指定网卡地址或 `0.0.0.0`，并设置所需 `server.port`。HTTP 模型选择顺序：请求 `model` → 配置 `model.default` → 宿主 Pi 当前选择的默认模型；可用模型由 `/v1/models` 查询。
 
-配置修改后执行 `/http stop` 和 `/http start` 生效。API Key 从 Pi 进程环境读取，更换环境变量中的密钥需要重新启动 Pi。
+配置修改后 `/http stop`、`/http start` 生效。`--http` 会在 Pi 会话启动或重载完成后自动监听；Pi 退出或切换会话时关闭当前监听。HTTP 聊天保存在各自的内部 Pi session，前台对话不加入这些消息。
 
-Pi 退出、重载或切换前台会话时会关闭 HTTP 监听。使用 `--http` 时，新会话或重载完成后自动重新启动；否则可再次执行 `/http start`。缺少 API Key 或端口被占用时，只报告 HTTP 启动失败，仍可正常使用 Pi。
+### API Key 在哪里
+
+初始化生成或沿用的 HTTP API Key 位于上述 `environment.json` 的 `PI_HTTP_API_KEY` 字段。将这个 Key 配置给调用方，使用 `Authorization: Bearer <Key>`。也可自行用 `openssl rand -hex 32` 生成并替换该字段。
+
+下方 curl 示例需要先设置 `export PI_HTTP_API_KEY='<环境文件中的 Key>'`。
+
+前台扩展优先读取 Pi 进程环境中的 `PI_HTTP_API_KEY`，未设置时读取 `paths.config_dir/environment.json`；其他模型供应商凭据仍由 Pi 自己管理。不要将 HTTP Key 写入业务配置文件、仓库或请求日志。
+
+更换进程环境变量中的 Key 需要重启 Pi；使用环境文件中的 Key 时，前台 `/http stop` 后 `/http start` 重新读取，后台服务执行 `restart`。已有进程环境变量会覆盖环境文件中的同名 Key。
+
+## 接口日志
+
+默认启用文件日志，前台 Pi 和后台运行都写入 `logging.directory/http.jsonl`，每行一个 JSON 对象：
+
+- `request_received`：UTC 时间、请求 ID、HTTP 方法、路径、来源 IP。
+- `request_input`：通过鉴权和格式校验后的 JSON 输入，在模型执行前记录。
+- `response_sent`：UTC 时间、同一请求 ID、状态码、耗时毫秒、输入和输出、响应字节数，以及文件数量、各文件字节数和总字节数。
+- `request_aborted`：客户端断开，记录已接收的文件大小，状态记为 `499`。
+
+鉴权失败、参数错误和上游错误也会记录；未通过鉴权的请求不记录业务输入。附件只记数量和大小，不记文件名、路径、内容或二进制数据。请求头、URL 查询参数不会进入日志，已知凭据和 Bearer Token 会脱敏。错误详情保留可用于排查的部分。
+
+默认记录聊天输入与回复；`logging.log_bodies: false` 可仅保留元数据。`logging.max_body_chars` 默认 `16384`，超出部分使用带 `truncated` 标记的预览。接口日志按 `logging.max_file_bytes`（默认 10 MiB）轮转，最多保留 `logging.max_files`（默认 7）个归档，名称为 `http.jsonl.1` 等；一条记录不会被拆分。
+
+```bash
+tail -n 100 -F /data/pi-http/logs/http.jsonl
+```
+
+日志目录无法创建或文件无法打开时，HTTP 启动会报错。运行中写入失败会带时间和路径报告到 stderr，业务请求仍可继续。聊天 TTL 只清理聊天数据，不控制日志保留。
 
 ## 后台运行与自动重启
 
-Linux 使用当前用户的 **systemd user service**；macOS 使用当前用户的 **launchd LaunchAgent**。扩展包提供 `pi-http-service` 管理入口，启动的仍是加载本扩展的真实 Pi CLI：`pi --mode rpc -e <扩展包路径> --http --http-config <配置路径>`。启动器保持 RPC 输入管道打开、消费输出、等待 HTTP 扩展就绪，并转发停止信号。崩溃后的重启由操作系统负责。
+Linux 使用当前用户的 systemd user service，macOS 使用当前用户的 launchd LaunchAgent。启动器运行真实 Pi CLI 的 RPC 模式，加载本扩展、保持输入管道、等待 HTTP 就绪并转发停止信号；异常重启交给操作系统处理。
 
-### 安装后台服务
-
-先完成前面的依赖安装和 Pi 模型配置，并在目标工作目录交互运行一次 Pi，完成该目录需要的信任或授权。后台运行无法处理人工确认；HTTP 执行中遇到需要用户交互的扩展时返回 `interaction_required`。
-
-将扩展包保存在稳定目录，HTTP 配置和数据也使用稳定路径。服务记录安装时 Node、Pi 和扩展包的绝对路径；移动目录或更换 Node/Pi 安装位置后，需要停止服务并重新安装服务定义。
-
-下面的命令在 Linux 和 macOS 通用，替换其中的路径：
+完成初始化、编辑配置，并在目标 Pi 工作目录完成模型配置和需要的信任授权后安装后台服务：
 
 ```bash
-# Pi 必须已经在 PATH 中；可先用 command -v pi 确认。
-export PI_HTTP_API_KEY='<使用 openssl rand -hex 32 生成的密钥>'
 SERVICE=/absolute/path/to/pi-http/scripts/service.mjs
-
-# 必须存在此配置文件，可从 pi-http.config.example.json 复制。
-node "$SERVICE" install \
-  --cwd /absolute/path/to/workspace \
-  --http-config /absolute/path/to/pi-http.config.json \
-  --pi "$(command -v pi)"
-
+node "$SERVICE" init
+# 先编辑 /data/pi-http/config/pi-http.config.json，再安装：
+node "$SERVICE" install --cwd /absolute/path/to/workspace --pi "$(command -v pi)"
 node "$SERVICE" start
 node "$SERVICE" status
+node "$SERVICE" logs
 ```
 
-这里用 `node <脚本路径>`，不要求 Pi 的包安装目录加入 PATH。如果通过 npm 的 bin 链接访问，也可直接使用 `pi-http-service <命令>`。支持 `--pi` 指向 Pi 可执行文件或 CLI 的 `.js` / `.mjs` / `.cjs` 文件。
-
-`install` 写入服务定义并配置登录后自动启动，**不会立即启动 Pi**；`start` 等待本次 Pi 进程里的 HTTP 扩展确认就绪才返回成功。默认启动等待 60 秒，可在安装时传 `--startup-timeout 120`。端口占用、配置错误和超时会导致启动器以非零状态退出，交给服务管理器处理；修正后执行 `start` 或 `restart`。
-
-HTTP 配置中的 `pi.cwd` 可以进一步指定工具工作目录；没有配置时沿用 `--cwd`。配置中的相对数据路径以 HTTP 配置文件所在目录为基准。不要把数据库或聊天目录放在临时目录、包下载缓存或升级时会删除的目录里。前台 Pi 和后台 Pi 不要同时打开同一个 HTTP 端口及数据库。
-
-### 环境变量与 API Key
-
-安装时会保存当前 `PATH`、`PI_HTTP_API_KEY` 和可选的 `PI_CODING_AGENT_DIR`。其他供应商环境变量需要通过 `--env-file` 显式提供；后台服务不会读取 `.zshrc`、`.bashrc` 或执行登录 shell。
-
-`--env-file` 使用 JSON 对象，所有值必须为字符串，例如：
-
-```json
-{
-  "PI_HTTP_API_KEY": "<HTTP 调用密钥>",
-  "OPENAI_API_KEY": "<如果供应商凭据来自环境变量，在这里提供>",
-  "PI_CODING_AGENT_DIR": "/absolute/path/to/pi-agent-dir"
-}
-```
+自定义主配置路径时，安装和后续管理均带上同一个参数：
 
 ```bash
-chmod 600 /absolute/path/to/service-env.json
-node "$SERVICE" install \
-  --cwd /absolute/path/to/workspace \
-  --http-config /absolute/path/to/pi-http.config.json \
-  --env-file /absolute/path/to/service-env.json
+node "$SERVICE" install --http-config /absolute/path/to/pi-http.config.json \
+  --cwd /absolute/path/to/workspace --pi "$(command -v pi)"
+node "$SERVICE" start --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" stop --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" restart --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" status --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" logs --http-config /absolute/path/to/pi-http.config.json
+node "$SERVICE" uninstall --http-config /absolute/path/to/pi-http.config.json
 ```
 
-文件中的变量覆盖安装时捕获的同名变量，并复制到服务自己的 `environment.json`，后续修改源文件不会自动生效。若使用 Pi 保存的供应商凭据，不需要再填供应商 Key；`PI_HTTP_API_KEY` 始终是独立的 HTTP 调用密钥。
+`install` 写服务定义，配置登录后自动启动，但不会立即启动。`start` 等待 HTTP 扩展确认就绪才返回成功。`stop` 正常停止，`restart` 正常停止后再启动，`uninstall` 取消自动启动并保留配置、凭据、日志和聊天数据。更新代码或安装参数前先 `stop`，再更新代码、`install` 和 `start`；普通 HTTP 配置变更只需 `restart`。
 
-| 平台 | 服务配置与环境文件目录 | 服务定义 |
-| --- | --- | --- |
-| Linux | `~/.config/pi-http/` | `~/.config/systemd/user/pi-http.service` |
-| macOS | `~/Library/Application Support/pi-http/` | `~/Library/LaunchAgents/dev.pi-http.plist` |
+后台服务不会读取 shell 的 `.zshrc` 或 `.bashrc`。安装时保存 `PATH`、HTTP Key、可选 `PI_CODING_AGENT_DIR`，并沿用生成的环境文件。额外的供应商环境变量写入 `environment.json`，或用 `install --env-file /absolute/path/to/variables.json` 导入 JSON 对象（值必须为字符串）；显式环境文件优先于当前 shell，同名 shell 变量优先于已保存的值。导入是复制，后续修改源文件不生效。
 
-服务目录权限为 `0700`，`service.json`、`environment.json` 权限为 `0600`。API Key 保存在环境文件中，不写入 systemd unit、launchd plist 或启动参数。更换密钥或其他环境变量后，编辑该 `environment.json`，再执行 `restart`；也可以停止服务后重新 `install --env-file ...`。服务安装器拒绝覆盖已加载或正在运行的服务。
+`paths.config_dir` 控制 `service.json`、`environment.json`、`status.json`；`logging.directory` 控制接口日志及 macOS 启动器日志。服务定义必须放在操作系统要求的位置：Linux 为 `~/.config/systemd/user/pi-http.service`，macOS 为 `~/Library/LaunchAgents/dev.pi-http.plist`。每个用户默认管理一个服务。
 
-### 启停、日志与更新
+服务记录安装时 Node、Pi 和扩展包的绝对路径。移动目录或更换运行时安装位置后重新安装服务定义。不要将真实配置、数据库或附件放到升级时会删除的包缓存或临时目录。前后台 Pi 不要同时监听相同端口或打开同一数据库。
+
+默认启动期限 60 秒，可用 `install --startup-timeout 120` 调整。总停止期限为 `max(45, HTTP shutdown_grace_seconds + 10)`，可通过 `--stop-timeout` 设置，必须大于 HTTP 宽限；增加 HTTP 宽限后重新安装服务定义。超过期限会强制停止，已中断请求不自动重跑。后台模式不能代替用户完成确认，HTTP 执行遇到必须交互时返回 `interaction_required`。
+
+### Linux
+
+安装器执行 `systemctl --user daemon-reload` 和 `enable pi-http.service`。失败后每 5 秒重试，60 秒最多启动 5 次；修正后运行 `start`，会清除失败计数。systemd 在 HTTP 确认就绪前可能已显示 `active`，以管理入口 `runtime.state: "ready"` 为准。
+
+`logs` 查看接口文件日志；启动器的进程日志（含时间）通过下面命令查看：
 
 ```bash
-node "$SERVICE" stop
-node "$SERVICE" start
-node "$SERVICE" restart
-node "$SERVICE" status
-node "$SERVICE" logs          # 持续查看最近 100 行及新增日志；Ctrl+C 退出查看
-node "$SERVICE" uninstall     # 停止并移除服务定义，取消以后自动启动
+journalctl --user -u pi-http.service -n 100 -f
 ```
 
-`status` 返回服务管理器是否已加载，以及启动器的状态、PID、Pi 子进程 PID。只有管理器已加载且 HTTP 已就绪时退出码为 0。`uninstall` 保留环境文件、服务配置、日志、HTTP 配置和聊天数据；需要时自行清理这些文件。
+需要可用的 systemd 用户管理器。默认随用户登录启动；无人登录或系统启动后也要运行时，由管理员为该用户启用 `loginctl enable-linger "$USER"`。不会自动改成 root 系统服务。
 
-正常停止先发送 SIGTERM，让 Pi 关闭扩展并按 HTTP 配置的 `server.shutdown_grace_seconds` 等待请求结束，超过宽限后请求取消。启动器的总停止期限默认为 `max(45, HTTP 宽限秒数 + 10)`，可用 `install --stop-timeout <秒数>` 调整，必须大于 HTTP 宽限；再超时则终止 Pi 的进程组。增加 HTTP 宽限后，需要重新安装服务定义以同步停止期限。`restart` 使用正常停止再启动，正在执行且被中断的请求不会自动重跑。
+### macOS
 
-更新扩展或服务参数的顺序：`stop` → 更新代码/依赖 → `install`（携带完整参数和环境文件）→ `start`。HTTP 普通配置变更只需 `restart`；每个用户默认管理一个名为 `pi-http` 的服务。
+需要当前用户 GUI 登录域。`start` 首次使用 `launchctl bootstrap gui/<UID> <plist>`，已加载时使用 `kickstart`；`stop` 使用 `bootout` 卸载，避免立即拉起。异常退出会自动重启，重试间隔至少约 5 秒。保留 plist 时下次登录仍自动运行，永久取消用 `uninstall`。
 
-### Linux：systemd
+`logs` 同时查看 HTTP 和启动器日志，启动器日志含 UTC 时间。`service.log` 不自动轮转，长期部署可由系统配置轮转。LaunchAgent 在用户登录后运行，注销会停止；锁屏或关闭终端不会停止，机器睡眠时无法处理请求。未提供系统级 LaunchDaemon。
 
-需要可用的 systemd 用户服务管理器。安装器执行 `systemctl --user daemon-reload` 和 `enable pi-http.service`；管理命令对应 `systemctl --user`，日志通过 `journalctl --user -u pi-http.service -n 100 -f` 查看。
+### 旧部署升级
 
-服务失败后每隔 5 秒重试，60 秒内最多启动 5 次；触发频率限制后会保持失败状态。修正配置后执行 `start`，管理入口会先清除失败计数。启动器确认就绪前，systemd 本身可能已显示 `active`，以管理入口返回的 `runtime.state: "ready"` 为准。
+工作目录的旧 `pi-http.config.json` 仍可识别。升级前在其中设置 `paths.data_dir` 为实际希望使用的可写根目录；已有 `chat.storage_dir`、`storage.database_path` 的显式值继续保留，不会自动搬迁。
 
-默认随用户登录启动，退出登录后的生命周期取决于系统的用户管理器设置。需要无人登录时运行、机器启动后自动运行，可由系统管理员为该用户启用 linger：
-
-```bash
-loginctl enable-linger "$USER"
-```
-
-服务始终以该用户身份运行。没有 systemd 用户管理器或没有用户总线的环境，需要先由管理员配置；本项目不自动改成 root 系统服务。
-
-### macOS：launchd
-
-需要当前用户的 GUI 登录域。`start` 首次使用 `launchctl bootstrap gui/<UID> <plist>`，已加载时使用 `kickstart`，`stop` 使用 `bootout` 卸载任务；`restart` 先正常卸载再加载。服务异常退出时 launchd 会重新启动，重试间隔至少约 5 秒。正常的 `stop` 会卸载任务，避免被立即拉起；保留 plist 时下次登录仍会自动启动，要永久取消请用 `uninstall`。
-
-日志写入 `~/Library/Application Support/pi-http/service.log`，`logs` 使用 `tail -n 100 -F` 查看。该日志文件不会自动轮转，需要长期运行时由部署者配置轮转。
-
-这是 **LaunchAgent**：用户登录后运行，注销会停止；单独锁屏或关闭终端不会停止。它不提供未登录时运行的系统级 LaunchDaemon；机器睡眠时也不能处理 HTTP 请求。
+旧版后台服务的已有 `service.json` 仍可直接运行；未指定主配置且未发现新配置时，管理入口会尝试旧的用户服务配置目录。迁移服务配置前，先停止旧服务、复制需要保留的环境文件、用新主配置重新 `install`，然后所有管理命令指定新的 `--http-config`。不要在旧服务运行时更换路径。
 
 ## 打包
 
@@ -234,7 +252,7 @@ macOS 可额外运行原生 launchd 测试，使用唯一临时任务验证崩�
 PI_HTTP_TEST_LAUNCHD=1 node --test test/launchd.test.mjs
 ```
 
-服务测试覆盖两种平台的定义生成与管理命令、权限和路径转义、RPC 输入保持、启动失败与超时、停止信号和强制退出；macOS 使用系统 `plutil` 校验生成的 plist。Pi 集成测试还会启动真实 Pi CLI，通过后台启动器执行 HTTP 聊天和工具调用，并验证退出清理与端口占用失败。服务管理命令用隔离的模拟执行器验证，不会给测试机器安装长期后台任务；Linux systemd 的实际运行需要在 Linux 上验收。
+配置和日志测试覆盖初始化不覆盖现有文件、密钥回退、目录自动创建、接口输入输出、文件大小、日志轮转、正文截断和错误凭据脱敏。服务测试覆盖两种平台的定义生成与管理命令、权限和路径转义、RPC 输入保持、启动失败与超时、停止信号和强制退出；macOS 使用系统 `plutil` 校验生成的 plist。Pi 集成测试还会启动真实 Pi CLI，通过后台启动器执行 HTTP 聊天和工具调用，并验证退出清理与端口占用失败。服务管理命令用隔离的模拟执行器验证，不会给测试机器安装长期后台任务；Linux systemd 的实际运行需要在 Linux 上验收。
 
 其余测试覆盖 HTTP 鉴权、模型优先级、会话续接、二进制附件、上传失败清理、并发、幂等、到期、真实连接断开与 HTTP 重启。Pi 集成测试使用真实 `pi install`、包发现和扩展加载器，验证 `/http` 启停、宿主模型及运行时凭据继承、内部会话不污染前台对话，以及退出与重载清理。打包测试会解压实际 npm 产物，只链接声明的运行依赖，不放入开发用 Pi SDK，再由宿主 Pi 完成安装和调用。测试使用独立临时配置和本机模拟模型，不读取真实供应商凭据或调用付费模型，需要能够绑定本机临时端口。
 

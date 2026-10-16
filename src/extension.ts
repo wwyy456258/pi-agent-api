@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { initialize } from "../scripts/configuration.mjs";
 import { PiBackend } from "./pi-backend.ts";
 
 type Server = Awaited<ReturnType<typeof createApp>>;
@@ -10,6 +11,7 @@ export default function piHttp(pi: ExtensionAPI): void {
   let server: Server | undefined;
   let address: string | undefined;
   let transition: Promise<void> = Promise.resolve();
+  let initializedPath: string | undefined;
   let latestContext: ExtensionContext | undefined;
 
   // Private stderr JSONL handshake for the service launcher, isolated from ordinary Pi use.
@@ -37,7 +39,7 @@ export default function piHttp(pi: ExtensionAPI): void {
     if (server) { report(ctx, `pi-http is already listening on ${address}`); return; }
     latestContext = ctx;
     const flag = pi.getFlag("http-config");
-    const config = await loadConfig({ cwd: ctx.cwd, path: typeof flag === "string" ? flag : undefined });
+    const config = await loadConfig({ cwd: ctx.cwd, path: typeof flag === "string" ? flag : initializedPath });
     const backend = await PiBackend.create(config, () => latestContext!, () => pi.getActiveTools());
     let next: Server;
     try { next = await createApp(config, backend); }
@@ -45,9 +47,10 @@ export default function piHttp(pi: ExtensionAPI): void {
     try {
       address = await next.app.listen({ host: config.server.host, port: config.server.port });
       server = next;
-      report(ctx, `pi-http listening on ${address}`);
+      await next.log.record("listener_started", { address });
+      report(ctx, `pi-http listening on ${address}; config: ${config.configPath}; logs: ${next.log.path}`);
       serviceStatus("ready", address);
-    } catch (error) { await next.close(); throw error; }
+    } catch (error) { await next.log.record("listener_start_failed", { code: (error as NodeJS.ErrnoException).code ?? "unknown" }); await next.close(); throw error; }
   });
   const displayFailure = (ctx: ExtensionContext, error: unknown) => {
     const key = process.env.PI_HTTP_API_KEY;
@@ -58,16 +61,32 @@ export default function piHttp(pi: ExtensionAPI): void {
   pi.registerFlag("http", { description: "Start the pi-http listener with this Pi session", type: "boolean", default: false });
   pi.registerFlag("http-config", { description: "Path to pi-http.config.json", type: "string" });
   pi.registerCommand("http", {
-    description: "Manage the HTTP listener: /http start | stop | status",
+    description: "Configure and manage HTTP: /http init [data-dir] | config | start | stop | status",
     handler: async (args, ctx) => {
       latestContext = ctx;
       try {
+        if (args.trim() === "init" || args.trim().startsWith("init ")) {
+          if (server) throw new Error("Stop HTTP before initializing configuration.");
+          const flag = pi.getFlag("http-config");
+          const result = await initialize({ cwd: ctx.cwd, dataDir: args.trim().slice(4).trim() || undefined,
+            path: typeof flag === "string" ? flag : initializedPath });
+          initializedPath = result.configPath;
+          report(ctx, `pi-http configuration: ${result.configPath}\nAPI Key environment file: ${result.environmentPath}\nExisting files were preserved. Edit the configuration, then /http start. Next Pi startup: --http-config ${JSON.stringify(result.configPath)}`);
+          return;
+        }
         switch (args.trim()) {
+          case "config": {
+            const flag = pi.getFlag("http-config");
+            const config = await loadConfig({ cwd: ctx.cwd, path: typeof flag === "string" ? flag : initializedPath });
+            report(ctx, JSON.stringify({ config_path: config.configPath, ...config.paths,
+              chat_dir: config.chat.storage_dir, database_path: config.storage.database_path, log_dir: config.logging.directory }, null, 2));
+            break;
+          }
           case "start": await start(ctx); break;
           case "stop": await stop(); report(ctx, "pi-http stopped."); break;
           case "":
           case "status": await transition; report(ctx, server ? `pi-http listening on ${address}` : "pi-http is stopped."); break;
-          default: report(ctx, "Usage: /http start | stop | status", true);
+          default: report(ctx, "Usage: /http init [data-dir] | config | start | stop | status", true);
         }
       } catch (error) { displayFailure(ctx, error); }
     },

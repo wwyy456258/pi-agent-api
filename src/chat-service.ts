@@ -52,9 +52,9 @@ export class ChatService {
     private now: () => number = Date.now) {}
 
   async initialize(): Promise<void> {
-    await mkdir(this.config.chat.storage_dir, { recursive: true });
+    await mkdir(this.config.chat.storage_dir, { recursive: true, mode: 0o700 });
     await rm(join(this.config.chat.storage_dir, ".tmp"), { recursive: true, force: true });
-    await mkdir(join(this.config.chat.storage_dir, ".tmp"), { recursive: true });
+    await mkdir(join(this.config.chat.storage_dir, ".tmp"), { recursive: true, mode: 0o700 });
     this.store.recover(this.now());
     // A crash between filesystem commit and the first SQLite commit may leave a new orphan directory.
     for (const entry of await readdir(this.config.chat.storage_dir, { withFileTypes: true })) {
@@ -110,14 +110,14 @@ export class ChatService {
     context.model = await this.backend.resolveModel(input.model);
   }
 
-  async receiveFile(context: Context, filename: string, stream: Readable): Promise<void> {
+  async receiveFile(context: Context, filename: string, stream: Readable, onBytes?: (size: number) => void): Promise<void> {
     const max = this.config.upload;
     if (max.max_files && context.files.length >= max.max_files) {
       throw new ApiError(413, "upload_limit_exceeded", "The configured file count limit was exceeded.");
     }
     const name = safeFilename(filename);
     const directory = join(context.temp, randomUUID());
-    await mkdir(directory, { recursive: true });
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     // Multipart parsers can close a malformed file while we await filesystem I/O.
     // Attaching a pipeline after that close can otherwise wait forever.
     if (stream.destroyed) throw new ApiError(400, "invalid_request", "The multipart file was terminated early.");
@@ -126,6 +126,7 @@ export class ChatService {
     let size = 0;
     const measure = new Transform({ transform(chunk: Buffer, _encoding, done) {
       size += chunk.length;
+      onBytes?.(size);
       if (max.max_file_bytes && size > max.max_file_bytes) {
         done(new ApiError(413, "upload_limit_exceeded", "The configured file size limit was exceeded."));
       } else { hash.update(chunk); done(null, chunk); }
@@ -153,7 +154,7 @@ export class ChatService {
     if (context.controller.signal.aborted) throw cancelled();
     const chatId = context.chatId!;
     const filesRoot = join(this.config.chat.storage_dir, chatId, "files");
-    await mkdir(filesRoot, { recursive: true });
+    await mkdir(filesRoot, { recursive: true, mode: 0o700 });
     for (const file of context.files) {
       const destination = join(filesRoot, randomUUID());
       await rename(dirname(file.path), destination);

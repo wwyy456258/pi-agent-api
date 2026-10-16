@@ -1,8 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { readConfiguration, resolveDirectories } from "../scripts/configuration.mjs";
 
 export interface Config {
   apiKey: string;
+  configPath: string;
+  paths: { data_dir: string; config_dir: string };
+  logging: { enabled: boolean; directory: string; log_bodies: boolean; max_body_chars: number; max_file_bytes: number; max_files: number };
   server: { host: string; port: number; shutdown_grace_seconds: number };
   pi: { cwd: string };
   model: { default?: string };
@@ -31,21 +35,16 @@ export async function loadConfig(options: {
   path?: string; cwd?: string; env?: NodeJS.ProcessEnv;
 } = {}): Promise<Config> {
   const cwd = resolve(options.cwd ?? process.cwd());
-  const configPath = resolve(cwd, options.path ?? "pi-http.config.json");
-  let raw: Record<string, unknown> = {};
-  let base = cwd;
-  try {
-    raw = object(JSON.parse(await readFile(configPath, "utf8")), "config");
-    base = dirname(configPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || options.path) throw error;
-  }
-  keys(raw, ["server", "pi", "model", "chat", "storage", "upload"], "");
+  const { raw, configPath } = await readConfiguration({ cwd, path: options.path });
+  const base = dirname(configPath);
+  keys(raw, ["paths", "logging", "server", "pi", "model", "chat", "storage", "upload"], "");
+  const directories = resolveDirectories(raw, configPath);
   const section = (name: string, allowed: string[]) => {
     const value = raw[name] === undefined ? {} : object(raw[name], name);
     keys(value, allowed, `${name}.`);
     return value;
   };
+  const logging = section("logging", ["enabled", "directory", "log_bodies", "max_body_chars", "max_file_bytes", "max_files"]);
   const server = section("server", ["host", "port", "shutdown_grace_seconds"]);
   const pi = section("pi", ["cwd"]);
   const model = section("model", ["default"]);
@@ -62,8 +61,23 @@ export async function loadConfig(options: {
     if (!Number.isSafeInteger(value) || (value as number) < min) throw new Error(`${label} must be an integer >= ${min}.`);
     return value as number;
   };
-  const apiKey = (options.env ?? process.env).PI_HTTP_API_KEY;
-  if (!apiKey?.trim()) throw new Error("PI_HTTP_API_KEY is required.");
+  const boolean = (value: unknown, fallback: boolean, label: string) => {
+    if (value === undefined) return fallback;
+    if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
+    return value;
+  };
+  let apiKey = (options.env ?? process.env).PI_HTTP_API_KEY;
+  if (apiKey === undefined) {
+    try {
+      const environmentPath = join(directories.configDir, "environment.json");
+      const text = await readFile(environmentPath, "utf8");
+      let parsed: unknown;
+      try { parsed = JSON.parse(text); } catch { throw new Error(`Invalid JSON in environment file ${environmentPath}.`); }
+      const environment = object(parsed, "environment");
+      if (typeof environment.PI_HTTP_API_KEY === "string") apiKey = environment.PI_HTTP_API_KEY;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  if (!apiKey?.trim()) throw new Error("PI_HTTP_API_KEY is required. Run /http init or pi-http-service init before starting HTTP.");
   const ttl = num(chat.ttl_seconds, 86400, "chat.ttl_seconds", 1);
   if (!validTtl(ttl)) throw new Error("chat.ttl_seconds is outside the supported timestamp range.");
   const interval = num(chat.cleanup_interval_seconds, 300, "chat.cleanup_interval_seconds", 1);
@@ -74,13 +88,19 @@ export async function loadConfig(options: {
   const port = num(server.port, 3000, "server.port", 1);
   if (port > 65535) throw new Error("server.port must be <= 65535.");
   return {
-    apiKey,
+    apiKey, configPath,
+    paths: { data_dir: directories.dataDir, config_dir: directories.configDir },
+    logging: { enabled: boolean(logging.enabled, true, "logging.enabled"), directory: directories.logDir,
+      log_bodies: boolean(logging.log_bodies, true, "logging.log_bodies"),
+      max_body_chars: num(logging.max_body_chars, 16384, "logging.max_body_chars", 1),
+      max_file_bytes: num(logging.max_file_bytes, 10485760, "logging.max_file_bytes", 1024),
+      max_files: num(logging.max_files, 7, "logging.max_files", 1) },
     server: { host: str(server.host, "127.0.0.1", "server.host"), port, shutdown_grace_seconds: grace },
     pi: { cwd: pi.cwd === undefined ? cwd : resolve(base, str(pi.cwd, cwd, "pi.cwd")) },
     model: model.default === undefined ? {} : { default: str(model.default, "", "model.default") },
-    chat: { storage_dir: resolve(base, str(chat.storage_dir, "./data/chats", "chat.storage_dir")),
+    chat: { storage_dir: resolve(base, str(chat.storage_dir, join(directories.dataDir, "chats"), "chat.storage_dir")),
       ttl_seconds: ttl, cleanup_interval_seconds: interval },
-    storage: { database_path: resolve(base, str(storage.database_path, "./data/pi-http.sqlite", "storage.database_path")) },
+    storage: { database_path: resolve(base, str(storage.database_path, join(directories.dataDir, "pi-http.sqlite"), "storage.database_path")) },
     upload: {
       max_file_bytes: num(upload.max_file_bytes, 0, "upload.max_file_bytes"),
       max_request_bytes: num(upload.max_request_bytes, 0, "upload.max_request_bytes"),

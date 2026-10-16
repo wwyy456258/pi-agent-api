@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import lockfile from 'proper-lockfile';
+import { DEFAULT_DATA_DIR, ensureDirectory, initialize, readConfiguration, resolveDirectories } from './configuration.mjs';
 
 const exec = promisify(execFile);
 const script = fileURLToPath(import.meta.url);
@@ -19,11 +20,12 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const exists = async path => { try { await access(path); return true; } catch { return false; } };
 
-export function servicePaths(platform = process.platform, home = homedir()) {
+export function servicePaths(platform = process.platform, home = homedir(), directories = {}) {
   if (!['linux', 'darwin'].includes(platform)) throw new Error('Only Linux (systemd) and macOS (launchd) are supported.');
-  const root = platform === 'linux' ? join(home, '.config/pi-http') : join(home, 'Library/Application Support/pi-http');
+  const root = directories.configDir ?? join(DEFAULT_DATA_DIR, 'config');
+  const logDir = directories.logDir ?? join(DEFAULT_DATA_DIR, 'logs');
   return { platform, root, config: join(root, 'service.json'), environment: join(root, 'environment.json'),
-    status: join(root, 'status.json'), log: join(root, 'service.log'),
+    status: join(root, 'status.json'), log: join(logDir, 'service.log'),
     definition: platform === 'linux' ? join(home, '.config/systemd/user', unit) : join(home, 'Library/LaunchAgents', `${label}.plist`) };
 }
 
@@ -35,7 +37,10 @@ export async function writePrivate(path, value) {
     await rename(temp, path);
   } finally { await rm(temp, { force: true }); }
 }
-const json = async path => JSON.parse(await readFile(path, 'utf8'));
+const json = async path => {
+  const text = await readFile(path, 'utf8');
+  try { return JSON.parse(text); } catch { throw new Error(`Invalid JSON in ${path}.`); }
+};
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 // systemd performs its own %-specifier and $-environment expansion, even inside quotes.
 const systemdArg = (value, expandEnvironment = true) => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', () => expandEnvironment ? '$$' : '$').replaceAll('\n', '\\n').replaceAll('\r', '\\r').replaceAll('\t', '\\t')}"`;
@@ -68,17 +73,23 @@ function environmentMap(value) {
   return value;
 }
 
-export async function install(options, paths = servicePaths(), execute = exec) {
+export async function install(options, paths, execute = exec) {
+  const loadedConfig = await readConfiguration({ path: options.httpConfig, cwd: options.cwd });
+  const http = loadedConfig.raw;
+  paths ??= servicePaths(process.platform, homedir(), resolveDirectories(http, loadedConfig.configPath));
   // Refuse replacing a running job: its configuration and stop timeout must stay consistent.
   if (await isLoaded(paths, execute)) throw new Error('Stop the service before installing or updating it.');
   const cwd = await realpath(resolve(options.cwd ?? process.cwd()));
-  const environment = environmentMap({ PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+  const environment = environmentMap({
+    ...(await exists(paths.environment) ? await json(paths.environment) : {}),
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     ...(process.env.PI_CODING_AGENT_DIR ? { PI_CODING_AGENT_DIR: resolve(process.env.PI_CODING_AGENT_DIR) } : {}),
     ...(process.env.PI_HTTP_API_KEY ? { PI_HTTP_API_KEY: process.env.PI_HTTP_API_KEY } : {}),
-    ...(options.envFile ? await json(resolve(options.envFile)) : {}) });
+    ...(options.envFile ? await json(resolve(options.envFile)) : {}),
+  });
   if (environment.PI_CODING_AGENT_DIR && !isAbsolute(environment.PI_CODING_AGENT_DIR)) throw new Error('PI_CODING_AGENT_DIR must be absolute.');
-  const httpConfig = resolve(options.httpConfig ?? join(cwd, 'pi-http.config.json'));
-  const http = await json(httpConfig);
+  const httpConfig = loadedConfig.configPath;
+  await access(httpConfig); // initialize explicitly, never install a silently unconfigured job
   const grace = http.server?.shutdown_grace_seconds ?? 30;
   if (!Number.isInteger(grace) || grace < 0) throw new Error('Invalid server.shutdown_grace_seconds.');
   const startupTimeout = Number(options.startupTimeout ?? 60);
@@ -90,7 +101,8 @@ export async function install(options, paths = servicePaths(), execute = exec) {
   const config = { version: 1, node: process.execPath, launcher: script, cwd, httpConfig,
     pi: await resolvePi(options.pi ?? 'pi', environment), startupTimeout, stopTimeout,
     environment: paths.environment, status: paths.status, platform: paths.platform };
-  await mkdir(paths.root, { recursive: true, mode: 0o700 });
+  await ensureDirectory(paths.root);
+  await ensureDirectory(dirname(paths.log));
   await chmod(paths.root, 0o700);
   await writePrivate(paths.environment, `${JSON.stringify(environment, null, 2)}\n`);
   await writePrivate(paths.config, `${JSON.stringify(config, null, 2)}\n`);
@@ -169,7 +181,7 @@ export async function runService(configPath) {
   const log = message => {
     let value = String(message);
     for (const secret of secrets) value = value.replaceAll(secret, '[redacted]');
-    process.stderr.write(`[pi-http-service] ${value}\n`);
+    process.stderr.write(`${new Date().toISOString()} [pi-http-service] ${value}\n`);
   };
   // launchd reaps the job's process group on a wrapper crash. Keep Pi in that
   // group on macOS; systemd uses a cgroup, and direct runs get a separate group.
@@ -260,12 +272,14 @@ export async function runService(configPath) {
 function parse(argv) {
   const [action, ...rest] = argv;
   const names = { '--cwd': 'cwd', '--http-config': 'httpConfig', '--pi': 'pi', '--env-file': 'envFile',
-    '--startup-timeout': 'startupTimeout', '--stop-timeout': 'stopTimeout', '--service-config': 'serviceConfig' };
+    '--startup-timeout': 'startupTimeout', '--stop-timeout': 'stopTimeout', '--service-config': 'serviceConfig', '--data-dir': 'dataDir' };
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
     const name = names[rest[index]];
     if (!name || !rest[index + 1] || rest[index + 1].startsWith('--')) throw new Error(`Unknown option or missing value: ${rest[index]}`);
-    if (action !== 'install' && !(action === 'run' && name === 'serviceConfig')) throw new Error('Options are only accepted by install.');
+    const allowed = action === 'install' ? ['cwd', 'httpConfig', 'pi', 'envFile', 'startupTimeout', 'stopTimeout']
+      : action === 'init' ? ['cwd', 'httpConfig', 'dataDir'] : action === 'run' ? ['serviceConfig'] : ['httpConfig'];
+    if (!allowed.includes(name)) throw new Error('Options are only accepted by install/init; management accepts --http-config.');
     options[name] = rest[index + 1];
   }
   return { action, options };
@@ -273,14 +287,28 @@ function parse(argv) {
 export async function main(argv) {
   const { action, options } = parse(argv);
   if (!action || ['--help', '-h', 'help'].includes(action)) {
-    console.log(`Usage: pi-http-service <install|start|stop|restart|status|logs|uninstall>\n\ninstall options:\n  --cwd PATH             Pi working directory (default: current directory)\n  --http-config PATH     HTTP configuration JSON (default: CWD/pi-http.config.json)\n  --pi PATH              Pi executable or CLI JavaScript file (default: pi on PATH)\n  --env-file PATH        JSON object of environment variables; copied to protected storage\n  --startup-timeout SEC  HTTP startup deadline (default: 60)\n  --stop-timeout SEC     Graceful stop deadline (default: max(45, HTTP grace + 10))\n\nLinux: per-user systemd service. macOS: per-user launchd LaunchAgent.\ninstall enables login startup but does not start the service immediately.\nSee README for API Key, credentials, logs, logout behavior and updates.`);
+    console.log(`Usage: pi-http-service <init|install|start|stop|restart|status|logs|uninstall>\n\ninit options:\n  --data-dir PATH        Data root (default: /data/pi-http)\n  --http-config PATH     Configuration to create; existing files are preserved\n\ninstall options:\n  --cwd PATH             Pi working directory (default: current directory)\n  --http-config PATH     HTTP configuration JSON (default: /data/pi-http/config/pi-http.config.json; legacy CWD file supported)\n  --pi PATH              Pi executable or CLI JavaScript file (default: pi on PATH)\n  --env-file PATH        JSON object of environment variables; copied to protected storage\n  --startup-timeout SEC  HTTP startup deadline (default: 60)\n  --stop-timeout SEC     Graceful stop deadline (default: max(45, HTTP grace + 10))\n\nLinux: per-user systemd service. macOS: per-user launchd LaunchAgent.\ninstall enables login startup but does not start the service immediately.\nSee README for API Key, credentials, logs, logout behavior and updates.`);
     return 0;
   }
   if (action === 'run') {
     if (!options.serviceConfig) throw new Error('run is an internal command requiring --service-config.');
     return runService(resolve(options.serviceConfig));
   }
-  const paths = servicePaths();
+  if (action === 'init') {
+    const result = await initialize({ dataDir: options.dataDir, path: options.httpConfig, cwd: options.cwd });
+    console.log(JSON.stringify(result, null, 2));
+    console.log('Edit the HTTP configuration and private environment file, then install/start. Existing files were preserved.');
+    return 0;
+  }
+  const loaded = await readConfiguration({ path: options.httpConfig, cwd: options.cwd });
+  let paths = servicePaths(process.platform, homedir(), resolveDirectories(loaded.raw, loaded.configPath));
+  // Existing installations remain manageable without moving or replacing their data.
+  if (!options.httpConfig && !(await exists(loaded.configPath))) {
+    const oldRoot = process.platform === 'linux' ? join(homedir(), '.config/pi-http') : join(homedir(), 'Library/Application Support/pi-http');
+    if (await exists(join(oldRoot, 'service.json'))) paths = { ...paths, root: oldRoot,
+      config: join(oldRoot, 'service.json'), environment: join(oldRoot, 'environment.json'),
+      status: join(oldRoot, 'status.json'), log: join(oldRoot, 'service.log') };
+  }
   if (action === 'install') {
     await install(options, paths);
     console.log(`Installed ${paths.definition}\nCredentials: ${paths.environment} (0600)\nRun pi-http-service start to start Pi.`);
@@ -288,8 +316,8 @@ export async function main(argv) {
   }
   if (action === 'logs') {
     const child = paths.platform === 'linux'
-      ? spawn('journalctl', ['--user', '-u', unit, '-n', '100', '-f'], { stdio: 'inherit' })
-      : spawn('tail', ['-n', '100', '-F', paths.log], { stdio: 'inherit' });
+      ? spawn('tail', ['-n', '100', '-F', join(resolveDirectories(loaded.raw, loaded.configPath).logDir, 'http.jsonl')], { stdio: 'inherit' })
+      : spawn('tail', ['-n', '100', '-F', join(resolveDirectories(loaded.raw, loaded.configPath).logDir, 'http.jsonl'), paths.log], { stdio: 'inherit' });
     return new Promise(resolve => { child.on('error', () => resolve(1)); child.on('exit', code => resolve(code ?? 1)); });
   }
   if (!['start', 'stop', 'restart', 'status', 'uninstall'].includes(action)) throw new Error(`Unknown command: ${action}`);

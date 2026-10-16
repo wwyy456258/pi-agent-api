@@ -5,3 +5,5 @@ pi-http.config.json
 .env
 *.tgz
 .DS_Store
+
+**/environment.json

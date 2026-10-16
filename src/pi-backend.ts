@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionServices, ExtensionContext, ExtensionFactory, ExtensionUIContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { Config } from "./config.ts";
+import { knownSecrets, redact } from "./redaction.ts";
 import { ApiError } from "./errors.ts";
 import type { AgentBackend, AgentHandle, ModelInfo } from "./types.ts";
 
@@ -85,9 +86,12 @@ export class PiBackend implements AgentBackend {
     const runtime = await services(this.config.pi.cwd, this.host);
     let selected = runtime.modelRuntime.getModels().find(model => info(model).id === options.model.id);
     if (!selected) throw new ApiError(400, "model_unavailable", "The selected model is no longer available.");
+    const secrets = [this.config.apiKey, ...knownSecrets()];
     if (this.host) {
       const auth = await this.host().modelRegistry.getApiKeyAndHeaders(selected);
       if (!auth.ok) throw new ApiError(400, "model_unavailable", "Pi could not resolve the selected model credentials.");
+      if (auth.apiKey) secrets.push(auth.apiKey);
+      for (const value of Object.values(auth.headers ?? {})) if (value) secrets.push(value);
       // OAuth providers resolve credentials inside the child session: a runtime API key override
       // would shadow the stored OAuth credential, and an OAuth-only provider then fails its auth check.
       if (auth.apiKey && !this.host().modelRegistry.isUsingOAuth(selected)) {
@@ -157,13 +161,13 @@ export class PiBackend implements AgentBackend {
           await session.prompt(message + attachmentText, { source: "rpc" });
           await session.waitForIdle();
           if (interaction) throw interaction;
-          if (upstreamFailed) throw new ApiError(502, "upstream_error", upstreamDetail ? `The model provider request failed: ${upstreamDetail}` : "The model provider request failed.");
+          if (upstreamFailed) throw new ApiError(502, "upstream_error", upstreamDetail ? `The model provider request failed: ${redact(upstreamDetail, secrets)}` : "The model provider request failed.");
           return reply;
         } catch (error) {
           if (interaction) throw interaction;
           if (error instanceof ApiError) throw error;
           const detail = error instanceof Error ? error.message : String(error);
-          throw new ApiError(502, "upstream_error", detail ? `Pi could not complete the model request: ${detail}` : "Pi could not complete the model request.");
+          throw new ApiError(502, "upstream_error", detail ? `Pi could not complete the model request: ${redact(detail, secrets)}` : "Pi could not complete the model request.");
         } finally { signal.removeEventListener("abort", abort); unsubscribe(); }
       },
       async dispose() {

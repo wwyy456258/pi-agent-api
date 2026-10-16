@@ -25,7 +25,7 @@ test('service installation generates private Linux/macOS definitions with correc
   const envFile = join(root, 'input.json');
   await writeFile(envFile, JSON.stringify({ PI_HTTP_API_KEY: 'test-secret', PROVIDER_API_KEY: 'provider-secret' }));
   for (const platform of ['linux', 'darwin']) {
-    const paths = servicePaths(platform, join(root, platform));
+    const paths = servicePaths(platform, join(root, platform), { configDir: join(root, platform, 'config'), logDir: join(root, platform, 'logs') });
     const calls = [];
     const execute = async (program, args) => {
       calls.push([program, ...args]);
@@ -58,7 +58,7 @@ test('service installation generates private Linux/macOS definitions with correc
 test('management selects user systemd/launchd commands, waits for readiness, and preserves configuration on uninstall', async t => {
   const root = await temporary(t);
   for (const platform of ['linux', 'darwin']) {
-    const paths = servicePaths(platform, join(root, platform));
+    const paths = servicePaths(platform, join(root, platform), { configDir: join(root, platform, 'config'), logDir: join(root, platform, 'logs') });
     await mkdir(paths.root, { recursive: true });
     await mkdir(dirname(paths.definition), { recursive: true });
     await writeFile(paths.config, JSON.stringify({ startupTimeout: 1, stopTimeout: 1 }));

@@ -64,6 +64,7 @@ await writeFile(join(agentDir, "extensions", "confirm.ts"), `export default func
     if (event.prompt.includes("[confirm]")) await ctx.ui.confirm("Confirm", "Continue?");
   });
 }`);
+await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: join(root, "data") } }));
 const config = await loadConfig({ cwd: root, env: { PI_HTTP_API_KEY: "fake-service-key" } });
 const backend = await PiBackend.create(config);
 const server = await createApp(config, backend);
@@ -104,14 +105,14 @@ try {
   assert.ok(probeAddress && typeof probeAddress !== "string");
   const pluginPort = probeAddress.port;
   await new Promise<void>(resolve => portProbe.close(() => resolve()));
-  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ server: { port: pluginPort },
+  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: join(root, "extension-data") }, server: { port: pluginPort },
     chat: { storage_dir: "./extension-data/chats" }, storage: { database_path: "./extension-data/state.sqlite" } }));
   await promisify(execFile)(process.execPath, [join(getPackageDir(), "dist/bundle/cli.js"), "install", packageRoot], {
     cwd: root, env: process.env, timeout: 10000,
   });
   const installed = JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8"));
   assert.ok(installed.packages.some((entry: string) => resolve(agentDir, entry) === resolve(packageRoot)));
-  const ownerServices = await createAgentSessionServices({ cwd: root, extensionFlagValues: new Map([["http", true]]) });
+  const ownerServices = await createAgentSessionServices({ cwd: root, extensionFlagValues: new Map<string, string | boolean>([["http", true], ["http-config", join(root, "pi-http.config.json")]]) });
   assert.deepEqual(ownerServices.diagnostics, []);
   await ownerServices.modelRuntime.setRuntimeApiKey("local-test", "fake-host-runtime-key");
   const { session: owner } = await createAgentSessionFromServices({ services: ownerServices,
@@ -152,6 +153,13 @@ try {
     assert.equal(switched.default_model, "local-test/model-a");
     await owner.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
     await assert.rejects(fetch(`${pluginUrl}/v1/models`, { headers }));
+    const beforeInit = await readFile(join(root, "pi-http.config.json"), "utf8");
+    await command.handler("init", owner.extensionRunner.createCommandContext());
+    assert.equal(await readFile(join(root, "pi-http.config.json"), "utf8"), beforeInit);
+    await command.handler("config", owner.extensionRunner.createCommandContext());
+    const logs = (await readFile(join(root, "extension-data/logs/http.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(logs.some(entry => entry.event === "response_sent" && entry.output?.reply === "reply:model-b"));
+    assert.ok(logs.every(entry => typeof entry.time === "string"));
   } finally {
     await owner.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     owner.dispose();

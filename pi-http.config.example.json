@@ -1,6 +1,13 @@
 {
+  "paths": { "data_dir": "/data/pi-http" },
   "server": { "host": "127.0.0.1", "port": 3000, "shutdown_grace_seconds": 30 },
-  "chat": { "storage_dir": "./data/chats", "ttl_seconds": 86400, "cleanup_interval_seconds": 300 },
-  "storage": { "database_path": "./data/pi-http.sqlite" },
-  "upload": { "max_file_bytes": 0, "max_request_bytes": 0, "max_files": 0 }
+  "chat": { "ttl_seconds": 86400, "cleanup_interval_seconds": 300 },
+  "upload": { "max_file_bytes": 0, "max_request_bytes": 0, "max_files": 0 },
+  "logging": {
+    "enabled": true,
+    "log_bodies": true,
+    "max_body_chars": 16384,
+    "max_file_bytes": 10485760,
+    "max_files": 7
+  }
 }

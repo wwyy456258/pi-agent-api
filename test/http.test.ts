@@ -59,7 +59,7 @@ class TestBackend implements AgentBackend {
 
 async function fixture(t: { after: (fn: () => Promise<void>) => void }, override: object = {}) {
   const directory = await mkdtemp(join(tmpdir(), "pi-http-test-"));
-  await writeFile(join(directory, "pi-http.config.json"), JSON.stringify(override));
+  await writeFile(join(directory, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: directory }, ...override }));
   const config = await loadConfig({ cwd: directory, env: { PI_HTTP_API_KEY: "test-service-key" } });
   const backend = new TestBackend(directory, config.model.default);
   let now = Date.now();
@@ -263,6 +263,10 @@ test("real socket disconnect cancels execution and the same key does not execute
   req.on("error", () => {});
   req.end(JSON.stringify({ message: "block" }));
   await f.backend.started.promise;
+  await f.log.flush();
+  const pendingLogs = await readFile(f.log.path, "utf8");
+  assert.ok(pendingLogs.includes('"event":"request_input"'));
+  assert.ok(pendingLogs.includes('"message":"block"'));
   req.destroy();
   await f.backend.aborted.promise;
   let replay;
@@ -273,6 +277,12 @@ test("real socket disconnect cancels execution and the same key does not execute
   }
   assert.equal(replay!.json().error.code, "request_cancelled");
   assert.equal(f.backend.calls.length, 1);
+  await f.log.flush();
+  const entries = (await readFile(f.log.path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const aborted = entries.filter(entry => entry.event === "request_aborted");
+  assert.equal(aborted.length, 1);
+  assert.equal(aborted[0].status, 499);
+  assert.equal(aborted[0].request_id, replay!.json().request_id);
 });
 
 test("shutdown cancels an active request after the configured grace period", async t => {
@@ -304,6 +314,7 @@ test("config paths, defaults, key requirement and explicit missing file", async 
   const root = await mkdtemp(join(tmpdir(), "pi-http-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const env = { PI_HTTP_API_KEY: "test-service-key" };
+  await writeFile(join(root, "pi-http.config.json"), JSON.stringify({ paths: { data_dir: root } }));
   await assert.rejects(loadConfig({ cwd: root, env: {} }), /PI_HTTP_API_KEY/);
   assert.equal((await loadConfig({ cwd: root, env })).model.default, undefined);
   await assert.rejects(loadConfig({ cwd: root, env, path: "missing.json" }));
@@ -313,4 +324,89 @@ test("config paths, defaults, key requirement and explicit missing file", async 
   assert.equal(configured.chat.storage_dir, join(root, "files"));
   await writeFile(join(root, "custom.json"), JSON.stringify({ model: { default: "" } }));
   await assert.rejects(loadConfig({ cwd: root, env, path: "custom.json" }));
+});
+
+test("HTTP logs include timed input/output and file sizes without credentials or attachment contents", async t => {
+  const f = await fixture(t);
+  const data = Buffer.from("PRIVATE_ATTACHMENT_CONTENT_DO_NOT_LOG");
+  const upload = form({ message: "audit this request" }, [{ name: "private-name.txt", data }]);
+  const response = await f.app.inject({ method: "POST", url: "/v1/chat", headers: { ...f.headers, "content-type": upload.contentType }, payload: upload.payload });
+  assert.equal(response.statusCode, 200);
+  await f.app.inject({ method: "POST", url: "/v1/chat?token=query-credential", headers: { authorization: "Bearer wrong-key-never-log" }, payload: { message: "UNAUTHENTICATED_BODY" } });
+  await f.log.flush();
+  const raw = await readFile(f.log.path, "utf8");
+  const entries = raw.trim().split("\n").map(line => JSON.parse(line));
+  const completed = entries.find(entry => entry.event === "response_sent" && entry.status === 200);
+  assert.ok(completed);
+  assert.match(completed.time, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  assert.ok(completed.duration_ms >= 0);
+  assert.equal(completed.input.message, "audit this request");
+  assert.equal(completed.output.reply, "reply:audit this request");
+  assert.equal(completed.output.request_id, response.json().request_id);
+  assert.deepEqual(completed.files, { count: 1, total_bytes: data.length, sizes_bytes: [data.length], omitted: 0 });
+  const received = entries.filter(entry => entry.event === "request_received");
+  assert.equal(received.length, 2);
+  assert.equal(entries.filter(entry => entry.event === "response_sent").length, 2);
+  for (const secret of [data.toString(), "private-name.txt", "test-service-key", "wrong-key-never-log", "UNAUTHENTICATED_BODY", "query-credential"]) assert.ok(!raw.includes(secret), secret);
+});
+
+test("upstream error details remain useful while HTTP and log credentials are redacted", async t => {
+  const f = await fixture(t);
+  f.backend.open = async () => ({
+    run: async () => { throw new ApiError(502, "upstream_error", "diagnostic: test-service-key Bearer upstream-secret https://example.invalid/?token=query-secret"); },
+    dispose: async () => {},
+  });
+  const response = await f.chat({ message: "fail safely" });
+  assert.equal(response.statusCode, 502);
+  assert.match(response.json().error.message, /diagnostic:/);
+  await f.log.flush();
+  const combined = response.body + await readFile(f.log.path, "utf8");
+  for (const secret of ["test-service-key", "upstream-secret", "query-secret"]) assert.ok(!combined.includes(secret));
+});
+
+test("logs rotate with bounded archives and body previews; body logging can be disabled", async t => {
+  const f = await fixture(t, { logging: { max_file_bytes: 1024, max_files: 2, max_body_chars: 80 } });
+  for (let index = 0; index < 10; index++) await f.chat({ message: "x".repeat(400) });
+  await f.log.flush();
+  const names = await readdir(f.config.logging.directory);
+  assert.ok(names.includes("http.jsonl.1"));
+  assert.ok(names.includes("http.jsonl.2"));
+  assert.ok(!names.includes("http.jsonl.3"));
+  const entries = (await readFile(f.log.path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  const response = entries.find(entry => entry.event === "response_sent");
+  assert.equal(response.input.truncated, true);
+  assert.ok(response.input.preview.length <= 80);
+  const metadata = await fixture(t, { logging: { log_bodies: false } });
+  await metadata.chat({ message: "BODY_NOT_LOGGED" });
+  await metadata.log.flush();
+  const text = await readFile(metadata.log.path, "utf8");
+  assert.ok(!text.includes("BODY_NOT_LOGGED"));
+  assert.ok(text.includes("response_sent"));
+});
+
+test("initialized private environment works for foreground Pi without an exported key", async t => {
+  const { initialize } = await import("../scripts/configuration.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "pi-http-config-env-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const setup = await initialize({ dataDir: directory });
+  const config = await loadConfig({ path: setup.configPath, env: {} });
+  assert.match(config.apiKey, /^[a-f0-9]{64}$/);
+  assert.equal(config.paths.data_dir, directory);
+  assert.equal(config.logging.directory, join(directory, "logs"));
+  const override = await loadConfig({ path: setup.configPath, env: { PI_HTTP_API_KEY: "override" } });
+  assert.equal(override.apiKey, "override");
+});
+
+test("malformed private environment reports its path without quoting credentials", async t => {
+  const { initialize } = await import("../scripts/configuration.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "pi-http-bad-env-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const setup = await initialize({ dataDir: directory });
+  await writeFile(setup.environmentPath, '{"PI_HTTP_API_KEY": "private-broken-secret" trailing invalid JSON');
+  await assert.rejects(loadConfig({ path: setup.configPath, env: {} }), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.message.includes(setup.environmentPath));
+    assert.ok(!error.message.includes("private-broken-secret"));
+    return true;
+  });
 });

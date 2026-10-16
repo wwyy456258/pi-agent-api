@@ -31,8 +31,9 @@ test('native launchd restarts a crashed adapter, reaps its Pi process and suppor
     if (loaded) await exec('launchctl', ['bootout', target], { timeout: 10000 });
     await rm(root, { recursive: true, force: true });
   });
-  const paths = servicePaths('darwin', root);
+  const paths = servicePaths('darwin', root, { configDir: join(root, 'config'), logDir: join(root, 'logs') });
   await mkdir(paths.root, { recursive: true });
+  await mkdir(join(root, "logs"), { recursive: true });
   const fake = join(root, 'pi.mjs');
   await writeFile(fake, `import {writeFileSync} from 'node:fs';
 process.stdin.resume();
